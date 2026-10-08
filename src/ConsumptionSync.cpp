@@ -3,7 +3,7 @@
 #include "Logging.h"
 
 namespace {
-/// Anzahl der erwarteten Zaehlerdatensaetze fuer GPIO 4 bis 7.
+/// Anzahl der erwarteten Datenbankdatensaetze fuer die vier Zaehlerkanaele.
 constexpr size_t expectedCounterCount = 4;
 }
 
@@ -39,7 +39,7 @@ bool ConsumptionSync::initialize(unsigned long now) {
     if (recordCount != expectedCounterCount) {
         logError(
             "Die Datenbank muss genau vier Zaehlerdatensaetze "
-            "(GPIO 4 bis 7) enthalten"
+            "(IDs 4 bis 7) enthalten"
         );
         return false;
     }
@@ -48,7 +48,7 @@ bool ConsumptionSync::initialize(unsigned long now) {
         if (records[index].counterId != index + 4) {
             logError(
                 "Die Datenbank enthaelt nicht die erwarteten Zaehler-IDs "
-                "(GPIO 4 bis 7)"
+                "(IDs 4 bis 7)"
             );
             return false;
         }

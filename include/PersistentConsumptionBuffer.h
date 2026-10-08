@@ -20,7 +20,7 @@ public:
 
     /**
      * @brief Addiert Verbrauch zu einem Zaehler und speichert den neuen Zustand.
-     * @param counterId GPIO-Nummer des Zaehlerkanals (4 bis 7).
+     * @param counterId Feste Datenbank-ID des Zaehlerkanals (4 bis 7).
      * @param amount Hinzuzurechnender Verbrauchswert.
      * @return true, wenn der neue Pufferstand dauerhaft gespeichert wurde.
      */

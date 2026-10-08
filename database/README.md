@@ -23,8 +23,11 @@
 - `addConsumptionBatch(deviceId, sequence, records, count)` applies one
   persistent upload batch atomically and only once.
 
-Valid counter IDs are the GPIO numbers `4` through `7`. The main loop records
-only new pulses into an ESP32 NVS flash buffer. NTP sets the clock to
+Valid counter IDs are the fixed channel IDs `4` through `7`; GPIO assignments
+are independently configurable. The main loop records only new pulses into an
+ESP32 NVS flash buffer. Consumption totals are stored in kWh. The configured
+resolution is the number of pulses per kWh, so 1000 pulses/kWh add 0.001 kWh
+(1 Wh) per valid pulse. NTP sets the clock to
 Europe/Berlin time with automatic summer-time changes; uploads occur on
 quarter-hour boundaries (15:00, 15:15, 15:30, ...). If free capacity in the
 NVS partition falls to 10% or lower, a pending batch is uploaded immediately

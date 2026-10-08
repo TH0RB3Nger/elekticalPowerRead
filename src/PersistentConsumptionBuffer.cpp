@@ -9,7 +9,7 @@ namespace {
 /// Kennung zur Erkennung eines gueltigen Pufferschemas im Flash.
 constexpr uint32_t stateMagic = 0x45504D31;
 
-/// Index des ersten GPIO-Zaehlerkanals.
+/// Feste ID des ersten Zaehlerkanals; unabhaengig von der GPIO-Zuordnung.
 constexpr uint8_t firstCounterId = 4;
 
 /// Anzahl der separat gespeicherten Zaehlerkanaele.

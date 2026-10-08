@@ -1,7 +1,7 @@
 # Elektical Power Read
 
-ESP32-basierter Stromverbrauchszaehler mit vier Impulseingaengen. Er erfasst
-Impulse an GPIO 4 bis 7, puffert neue Verbrauchswerte dauerhaft im NVS und
+ESP32-basierter Stromverbrauchszaehler mit vier konfigurierbaren
+Impulseingaengen. Er puffert neue Verbrauchswerte dauerhaft im NVS und
 uebertraegt sie gebuendelt an MariaDB/MySQL. Uploads erfolgen an festen
 Viertelstundenzeitpunkten in der Zeitzone Europe/Berlin. Ein niedriger NVS-
 Freispeicheranteil kann einen zusaetzlichen, sofortigen Upload ausloesen.
@@ -21,15 +21,39 @@ Freispeicheranteil kann einen zusaetzlichen, sofortigen Upload ausloesen.
 ### Hardware und Dienste
 
 - Arduino Nano ESP32 (ESP32-S3) und eine passende Stromversorgung.
-- Vier Impulsgeber bzw. Zaehlerausgaenge an GPIO 4, 5, 6 und 7.
+- Vier Impulsgeber bzw. Zaehlerausgaenge an den in `Config::Counters`
+  festgelegten GPIO-Pins (Vorgabe: 4, 5, 6 und 7).
 - WLAN mit Zugang zum MariaDB-/MySQL-Server und zu mindestens einem NTP-Server.
 - MariaDB oder MySQL mit InnoDB-Unterstuetzung.
 - PlatformIO in Visual Studio Code oder die PlatformIO Core CLI.
 
-Die Eingangspins sind als `INPUT_PULLDOWN` konfiguriert und zaehlen steigende
-Flanken. Stelle sicher, dass die Signalpegel elektrisch zum ESP32 passen
-(3,3-V-Logik) und keine Spannung oberhalb der erlaubten GPIO-Grenzen anliegt.
-Der Umrechnungsfaktor je Impuls muss zum angeschlossenen Zaehler passen.
+Die Eingangspins sind standardmaessig GPIO 4 bis 7, lassen sich aber in
+`Config::Counters` einzeln aendern. Die Impulspolaritaet ist mit
+`Config::Runtime::pulseActiveHigh` einstellbar: `true` erwartet aktive HIGH-
+Pulse mit internem Pulldown, `false` aktive LOW-Pulse mit internem Pullup
+(typisch bei S0-Open-Collector-Ausgaengen). Beide Signalflanken werden
+ausgewertet, um die Dauer des aktiven Pegels zu messen. Pruefe die Beschaltung
+und den Zaehlerausgang, bevor du die Polaritaet einstellst. Waehle nur fuer das
+Board verfuegbare GPIOs, verwende jeden Pin nur einmal und stelle sicher, dass
+die Signalpegel elektrisch zum ESP32 passen (3,3-V-Logik). Die Datenbank
+verwendet weiterhin die festen Zaehler-IDs 4 bis 7; diese IDs bezeichnen die
+vier Kanaele und muessen nicht den umkonfigurierten GPIO-Nummern entsprechen.
+
+`Config::Runtime::resolutionPulsesPerKWh` gibt die Zaehleraufloesung in
+Impulsen pro Kilowattstunde an. Die Firmware speichert Verbrauchswerte in kWh:
+bei 1000 Impulsen/kWh entspricht ein gueltiger Impuls 0,001 kWh (1 Wh).
+`Config::Runtime::minimumPulseDurationMs` legt die erforderliche Mindestdauer
+des aktiven Pegels fest; kuerzere Pulse werden verworfen.
+`Config::Runtime::minimumPulseIntervalMs` begrenzt zusaetzlich den
+Mindestabstand zwischen gezaehlten Impulsen.
+
+**Einheitenhinweis bei einem Firmware-Update:** Diese Firmware speichert
+Verbrauchswerte als kWh. Aeltere Firmware-Versionen haben den bisherigen
+`consumptionPerPulse`-Wert direkt je Impuls addiert; die alten Datenbankstaende
+koennen deshalb eine andere Einheit haben. Sichere und pruefe die vorhandenen
+Zaehlerstaende und migriere sie vor dem Mischen mit neuen kWh-Werten. Eine
+automatische Umrechnung ist ohne Kenntnis der bisher verwendeten Einheit nicht
+sicher moeglich.
 
 ### 1. Datenbank vorbereiten
 
@@ -56,6 +80,7 @@ Zeiteinstellungen in den passenden Bereichen ein:
 
 - `Config::Wifi`: SSID und WLAN-Passwort.
 - `Config::Database`: Host, Port, Datenbank, Benutzer und Passwort.
+- `Config::Counters`: GPIO-Pin fuer jeden der vier Impulszaehler.
 - `Config::Runtime`: Impulsfaktor, Entprellzeit, Uploadtakt,
   NVS-Schwelle, Wiederholungsintervalle, WLAN-Timeouts, Logging-Stufe und
   serielle Ausgabe.
@@ -99,7 +124,7 @@ den zugehoerigen Flash-Puffer.
 | `src/main.cpp` | Initialisiert Komponenten und orchestriert Impulserfassung, Netzwerk, NTP und Uploads. |
 | `include/Config.h.example` | Vorlage fuer die lokale, zentrale Konfiguration. |
 | `include/Config.h` | Lokale WLAN-, Datenbank- und Laufzeiteinstellungen; wird ignoriert. |
-| `src/CountPin.cpp`, `include/CountPin.h` | Entprellte Interrupt-Impulszaehler fuer einen GPIO. |
+| `src/CountPin.cpp`, `include/CountPin.h` | S0-Impulszaehler: aktive Pulsdauer, Signalpolaritaet, Mindestabstand und Aufloesungsumrechnung. |
 | `src/Logging.cpp`, `include/Logging.h` | Zeitgestempelte Protokollierung mit konfigurierbaren Stufen. |
 | `src/WirelessConnection.cpp`, `include/WirelessConnection.h` | WLAN-Verbindung, Reconnects, Events und Signalstaerke. |
 | `src/NtpClock.cpp`, `include/NtpClock.h` | NTP-Start, Plausibilitaetspruefung und Europe/Berlin-Systemzeit. |
@@ -118,8 +143,8 @@ angeboten werden.
 
 ## Ablauf und Ausfallsicherheit
 
-1. Jeder GPIO-Interrupt wird entprellt und erhoeht den zugehoerigen
-   Impulszaehler.
+1. Die GPIO-Interrupts messen beide Flanken. Nur Pulse mit passender Polaritaet,
+   ausreichender aktiver Dauer und ausreichendem Mindestabstand werden gezaehlt.
 2. `main.cpp` vergleicht die Zaehlerstaende mit den zuletzt gepufferten
    Staenden und schreibt nur neue Impulse als Verbrauchsdifferenz ins NVS.
 3. `NtpClock` setzt die Systemzeit. Die Zeitzone
@@ -148,8 +173,11 @@ Schluessel waechst nicht mit den Verbrauchswerten.
 
 Die zentralen Werte liegen nach dem Kopieren in `include/Config.h`:
 
-- `Config::Runtime::consumptionPerPulse`: Umrechnungsfaktor je Impuls; an den Zaehler anpassen.
-- `Config::Runtime::debounceDelayMs`: Entprellzeit in Millisekunden.
+- `Config::Runtime::resolutionPulsesPerKWh`: Aufloesung in Impulsen pro kWh; Typenschild oder Datenblatt beachten.
+- `Config::Runtime::pulseActiveHigh`: `true` fuer aktive HIGH-, `false` fuer aktive LOW-Pulse.
+- `Config::Runtime::minimumPulseDurationMs`: erforderliche Mindestdauer des aktiven Pegels.
+- `Config::Runtime::minimumPulseIntervalMs`: Mindestabstand zwischen gezaehlten Impulsen.
+- `Config::Counters::pin1` bis `pin4`: GPIO-Zuordnung der vier Impulseingaenge.
 - `Config::Runtime::uploadEveryMinutes`: Uploadabstand. Er muss ein positiver Teiler von 60
   sein. `15` ergibt lokale Zeitpunkte wie 15:00, 15:15, 15:30 und 15:45.
 - `Config::Runtime::minimumFreeNvsPercent`: Schwelle fuer den zusaetzlichen Speicher-Upload.
@@ -200,7 +228,7 @@ Verfuegung, sind dann aber keine Kalenderzeit.
 | Startwerte fehlen | `database/schema.sql` ausfuehren; die Firmware erwartet Datensaetze fuer alle IDs 4 bis 7. |
 | Upload wird wiederholt | Das ist bei Timeout oder verlorener Bestaetigung beabsichtigt. Geraete-ID und Sequenznummer verhindern doppelte Batchbuchung. Puffer nur nach Analyse manuell loeschen. |
 | NVS-Puffer kann nicht geladen werden | Meldung nicht ignorieren: ein ungueltiger Puffer wird nicht automatisch ueberschrieben, um moeglicherweise ungesendete Werte nicht still zu verwerfen. |
-| Impulse fehlen | Signalpegel, steigende Flanke, GPIO-Zuordnung, Entprellzeit und Impulsfaktor kontrollieren. |
+| Impulse fehlen | Signalpolaritaet, GPIO-Zuordnung, Mindestdauer des aktiven Pegels und Mindestabstand mit dem Zaehlerdatenblatt vergleichen. |
 
 ## Sicherheit und Betriebshinweise
 

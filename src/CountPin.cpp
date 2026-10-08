@@ -1,34 +1,66 @@
 #include "CountPin.h"
 
-/**
- * @brief Zaehlt einen gueltigen Impuls, wenn die Entprellzeit abgelaufen ist.
- * @param arg Zeiger auf die CountPin-Instanz.
- */
+/// Verarbeitet beide Flanken, um aktive Pulsdauer und Intervall zu pruefen.
 void IRAM_ATTR CountPin::handleInterrupt(void* arg) {
     CountPin* counter = static_cast<CountPin*>(arg);
     const unsigned long now = micros();
+    const bool levelIsHigh =
+        gpio_get_level(static_cast<gpio_num_t>(counter->_pin)) != 0;
+    const bool pulseIsActive =
+        counter->_pulseActiveHigh ? levelIsHigh : !levelIsHigh;
 
-    if (now - counter->_lastInterruptTime >= counter->_debounceDelay * 1000UL) {
-        counter->_countValue++;
-        counter->_lastInterruptTime = now;
+    if (pulseIsActive) {
+        counter->_pulseStartTime = now;
+        counter->_pulseActive = true;
+        return;
     }
+
+    const unsigned long pulseStart = counter->_pulseStartTime;
+    if (!counter->_pulseActive) {
+        return;
+    }
+
+    counter->_pulseActive = false;
+    counter->_pulseStartTime = 0;
+    if (now - pulseStart < counter->_minimumPulseDurationUs) {
+        return;
+    }
+
+    const unsigned long lastPulseStart = counter->_lastPulseStartTime;
+    if (lastPulseStart != 0
+        && pulseStart - lastPulseStart < counter->_minimumPulseIntervalUs) {
+        return;
+    }
+
+    counter->_countValue++;
+    counter->_lastPulseStartTime = pulseStart;
 }
 
 /**
- * @brief Initialisiert den Pin und registriert den steigenden Interrupt.
+ * @brief Initialisiert den Pin und registriert beide S0-Signalflanken.
  */
-CountPin::CountPin(int pin, __long_double_t factor, unsigned long debounceDelay)
+CountPin::CountPin(
+    int pin,
+    double resolutionPulsesPerKWh,
+    bool pulseActiveHigh,
+    unsigned long minimumPulseDurationMs,
+    unsigned long minimumPulseIntervalMs
+)
     : _pin(pin),
-      _factor(factor),
+      _resolutionPulsesPerKWh(resolutionPulsesPerKWh),
+      _pulseActiveHigh(pulseActiveHigh),
       _countValue(0),
-      _lastInterruptTime(0),
-      _debounceDelay(debounceDelay) {
-    pinMode(_pin, INPUT_PULLDOWN);
+      _pulseStartTime(0),
+      _pulseActive(false),
+      _lastPulseStartTime(0),
+      _minimumPulseDurationUs(minimumPulseDurationMs * 1000UL),
+      _minimumPulseIntervalUs(minimumPulseIntervalMs * 1000UL) {
+    pinMode(_pin, _pulseActiveHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
     attachInterruptArg(
         digitalPinToInterrupt(_pin),
         handleInterrupt,
         this,
-        RISING
+        CHANGE
     );
 }
 
@@ -43,11 +75,11 @@ unsigned long CountPin::getCount() const {
 }
 
 /**
- * @brief Berechnet den skalierten Gesamtwert aus einem konsistenten Stand.
+ * @brief Berechnet den kWh-Gesamtwert aus einem konsistenten Impulsstand.
  */
-__long_double_t CountPin::getValue() const {
+double CountPin::getValue() const {
     noInterrupts();
-    const __long_double_t value = _countValue * _factor;
+    const double value = _countValue / _resolutionPulsesPerKWh;
     interrupts();
     return value;
 }

@@ -26,13 +26,39 @@ static char user[] = "esp32_meter";
 static char password[] = "REPLACE_WITH_A_SECRET";
 }
 
+/// Hardwarezuordnung der vier Impulszaehler zu ESP32-GPIOs.
+namespace Counters {
+constexpr uint8_t pin1 = 4;
+constexpr uint8_t pin2 = 5;
+constexpr uint8_t pin3 = 6;
+constexpr uint8_t pin4 = 7;
+
+static_assert(
+    pin1 != pin2 && pin1 != pin3 && pin1 != pin4
+        && pin2 != pin3 && pin2 != pin4 && pin3 != pin4,
+    "Jeder Zaehler muss einen eigenen GPIO verwenden"
+);
+}
+
 /// Impulserfassung, Pufferschutz und Upload-Zeitplan.
 namespace Runtime {
-/// GPIO-Entprellzeit der Impulszaehler in Millisekunden.
-constexpr unsigned long debounceDelayMs = 50;
+/// Zaehleraufloesung in Impulsen pro Kilowattstunde.
+/// Beispiel: 1000 Impulse/kWh entsprechen 0,001 kWh je Impuls.
+constexpr double resolutionPulsesPerKWh = 1000.0;
 
-/// Verbrauchseinheiten pro erkanntem Impuls.
-constexpr double consumptionPerPulse = 100.0;
+/// true: Impuls aktiv bei HIGH; false: Impuls aktiv bei LOW (typisch S0).
+constexpr bool pulseActiveHigh = true;
+
+/// Minimale Dauer des aktiven Pegels, damit ein S0-Impuls gezaehlt wird.
+constexpr unsigned long minimumPulseDurationMs = 30;
+
+/// Mindestabstand zwischen zwei gezaehlten Impulsen zur Stoerunterdrueckung.
+constexpr unsigned long minimumPulseIntervalMs = 50;
+
+static_assert(
+    resolutionPulsesPerKWh > 0.0,
+    "Die Zaehleraufloesung muss groesser als 0 Impulse/kWh sein"
+);
 
 /// Uploadtakt in Minuten; muss ein positiver Teiler von 60 sein.
 constexpr uint8_t uploadEveryMinutes = 15;

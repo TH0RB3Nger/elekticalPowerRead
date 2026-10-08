@@ -51,11 +51,35 @@ NvsStorageMonitor storageMonitor(
     Config::Runtime::flashMonitorIntervalMs
 );
 
-/// Vier entprellte Impulszaehler fuer GPIO 4 bis 7.
-CountPin counter1(4, Config::Runtime::consumptionPerPulse, Config::Runtime::debounceDelayMs);
-CountPin counter2(5, Config::Runtime::consumptionPerPulse, Config::Runtime::debounceDelayMs);
-CountPin counter3(6, Config::Runtime::consumptionPerPulse, Config::Runtime::debounceDelayMs);
-CountPin counter4(7, Config::Runtime::consumptionPerPulse, Config::Runtime::debounceDelayMs);
+/// Vier entprellte Impulszaehler an den konfigurierten GPIO-Pins.
+CountPin counter1(
+    Config::Counters::pin1,
+    Config::Runtime::resolutionPulsesPerKWh,
+    Config::Runtime::pulseActiveHigh,
+    Config::Runtime::minimumPulseDurationMs,
+    Config::Runtime::minimumPulseIntervalMs
+);
+CountPin counter2(
+    Config::Counters::pin2,
+    Config::Runtime::resolutionPulsesPerKWh,
+    Config::Runtime::pulseActiveHigh,
+    Config::Runtime::minimumPulseDurationMs,
+    Config::Runtime::minimumPulseIntervalMs
+);
+CountPin counter3(
+    Config::Counters::pin3,
+    Config::Runtime::resolutionPulsesPerKWh,
+    Config::Runtime::pulseActiveHigh,
+    Config::Runtime::minimumPulseDurationMs,
+    Config::Runtime::minimumPulseIntervalMs
+);
+CountPin counter4(
+    Config::Counters::pin4,
+    Config::Runtime::resolutionPulsesPerKWh,
+    Config::Runtime::pulseActiveHigh,
+    Config::Runtime::minimumPulseDurationMs,
+    Config::Runtime::minimumPulseIntervalMs
+);
 
 /// Verhindert, dass ein fehlgeschlagener NVS-Start als gueltiger Puffer gilt.
 bool consumptionBufferReady = false;
@@ -63,7 +87,7 @@ bool consumptionBufferReady = false;
 /**
  * @brief Addiert die seit dem letzten Speichern eingetroffenen Impulse im NVS.
  * @param counter Impulszaehler des GPIO-Pins.
- * @param counterId GPIO-Nummer und Datenbank-ID.
+ * @param counterId Feste Datenbank-ID des Zaehlerkanals (4 bis 7).
  * @param savedCount Letzter erfolgreich im Flash uebernommener Impulsstand.
  */
 void bufferNewPulses(
@@ -82,7 +106,7 @@ void bufferNewPulses(
 
     const unsigned long newPulses = currentCount - savedCount;
     const double addedConsumption =
-        newPulses * Config::Runtime::consumptionPerPulse;
+        newPulses / Config::Runtime::resolutionPulsesPerKWh;
 
     if (consumptionBuffer.addConsumption(counterId, addedConsumption)) {
         savedCount = currentCount;

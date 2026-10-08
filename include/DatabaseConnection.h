@@ -6,7 +6,7 @@
  * @brief Ein kumulierter Verbrauchsstand fuer einen einzelnen GPIO-Zaehler.
  */
 struct ConsumptionRecord {
-    /// GPIO-Nummer des Zaehlerkanals (4 bis 7).
+    /// Feste Datenbank-ID des Zaehlerkanals (4 bis 7).
     uint8_t counterId;
     /// Kumulierte Verbrauchsmenge fuer diesen Kanal.
     double totalConsumption;
