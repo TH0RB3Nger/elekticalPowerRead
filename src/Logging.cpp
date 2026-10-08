@@ -1,8 +1,10 @@
 #include "Logging.h"
 
+#include "Config.h"
+
 namespace {
-/// Aktuelle Filterstufe; fuer weniger Ausgabe auf LOG_INFO oder LOG_DEBUG setzen.
-constexpr LogLevel currentLogLevel = LOG_DEBUG_PLUS;
+/// Die Mindeststufe wird zentral in Config.h festgelegt.
+constexpr LogLevel currentLogLevel = Config::Runtime::minimumLogLevel;
 }
 
 /**

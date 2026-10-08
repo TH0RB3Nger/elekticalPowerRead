@@ -90,11 +90,15 @@ const char* getWiFiStatusName(wl_status_t status) {
 WirelessConnection::WirelessConnection(
     const char* ssid,
     const char* password,
-    unsigned long maxConnectionTime
+    unsigned long maxConnectionTime,
+    unsigned long reconnectInterval,
+    unsigned long signalLogInterval
 )
     : _ssid(ssid),
       _password(password),
       _maxConnectionTime(maxConnectionTime),
+      _reconnectInterval(reconnectInterval),
+      _signalLogInterval(signalLogInterval),
       _lastReconnectAttempt(0),
       _lastSignalLog(0),
       _eventHandlerRegistered(false) {}
@@ -148,8 +152,7 @@ void WirelessConnection::maintainConnection() {
     }
 
     const unsigned long now = millis();
-    constexpr unsigned long reconnectInterval = 5000;
-    if (now - _lastReconnectAttempt < reconnectInterval) {
+    if (now - _lastReconnectAttempt < _reconnectInterval) {
         return;
     }
 
@@ -171,7 +174,8 @@ void WirelessConnection::printStatus() {
     logDebug("WiFi-Status: " + String(getWiFiStatusName(WiFi.status())));
 
     const unsigned long now = millis();
-    if (WiFi.status() == WL_CONNECTED && now - _lastSignalLog >= 10000UL) {
+    if (WiFi.status() == WL_CONNECTED
+        && now - _lastSignalLog >= _signalLogInterval) {
         _lastSignalLog = now;
         logDebugPlus("WLAN-Signalstaerke: " + String(WiFi.RSSI()) + " dBm");
     }

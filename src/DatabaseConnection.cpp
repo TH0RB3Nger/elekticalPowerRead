@@ -4,17 +4,14 @@
 #include <WiFi.h>
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
 
 #include "Logging.h"
 
-#if __has_include("DatabaseConfig.h")
-#include "DatabaseConfig.h"
+#if __has_include("Config.h")
+#include "Config.h"
 #else
-static char databaseHost[] = "";
-static char databaseName[] = "";
-static char databaseUser[] = "";
-static char databasePassword[] = "";
-static constexpr uint16_t databasePort = 3306;
+#error "Config.h fehlt. Kopiere include/Config.h.example nach include/Config.h und trage deine Werte ein."
 #endif
 
 namespace {
@@ -45,22 +42,28 @@ bool ensureConnected() {
         return false;
     }
 
-    if (databaseHost[0] == '\0' || databaseName[0] == '\0'
-        || databaseUser[0] == '\0' || databasePassword[0] == '\0') {
+    if (Config::Database::host[0] == '\0'
+        || Config::Database::name[0] == '\0'
+        || Config::Database::user[0] == '\0'
+        || Config::Database::password[0] == '\0'
+        || strncmp(Config::Database::host, "REPLACE_", 8) == 0
+        || strncmp(Config::Database::name, "REPLACE_", 8) == 0
+        || strncmp(Config::Database::user, "REPLACE_", 8) == 0
+        || strncmp(Config::Database::password, "REPLACE_", 8) == 0) {
         logError(
-            "Datenbankzugangsdaten fehlen. "
-            "include/DatabaseConfig.h anhand der Beispieldatei konfigurieren."
+            "Datenbankzugangsdaten fehlen oder enthalten Platzhalter. "
+            "include/Config.h konfigurieren."
         );
         return false;
     }
 
     logInfo("Verbinde mit MariaDB/MySQL");
     if (!mysqlConnection.connect(
-            databaseHost,
-            databasePort,
-            databaseUser,
-            databasePassword,
-            databaseName)) {
+            Config::Database::host,
+            Config::Database::port,
+            Config::Database::user,
+            Config::Database::password,
+            Config::Database::name)) {
         logError("Verbindung zum MariaDB/MySQL-Server fehlgeschlagen");
         mysqlConnection.close();
         return false;

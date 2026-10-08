@@ -2,11 +2,13 @@
 
 1. Run `schema.sql` on the MariaDB/MySQL server to create the database and
    initialize the four counter rows.
-2. Copy `include/DatabaseConfig.h.example` to `include/DatabaseConfig.h` and
-   set the server host, port, database name, user, and password. The real
-   configuration file is excluded from Git.
+2. Copy `include/Config.h.example` to `include/Config.h` and set the database
+   values in `Config::Database`. The real configuration file, which also
+   contains Wi-Fi and runtime settings, is excluded from Git.
 3. Create a dedicated database user with only the permissions the firmware
-   needs, and allow connections from the ESP32's local network.
+   needs: SELECT, INSERT, UPDATE, and DELETE on `energy_consumption`, plus
+   SELECT, INSERT, and UPDATE on `energy_sync_state`. Allow connections only
+   from the ESP32's local network.
 4. Keep the database on a trusted local network. This firmware connects
    directly without TLS; do not expose the database port to the public Internet.
 
@@ -27,7 +29,7 @@ Europe/Berlin time with automatic summer-time changes; uploads occur on
 quarter-hour boundaries (15:00, 15:15, 15:30, ...). If free capacity in the
 NVS partition falls to 10% or lower, a pending batch is uploaded immediately
 instead of waiting for the next boundary. The interval and free-space threshold
-are constants in `src/main.cpp`.
+are constants in `Config::Runtime` in `include/Config.h`.
 
 The buffer is cleared only after the transaction succeeds and a follow-up query
 confirms that all four database rows are available. A per-device sequence

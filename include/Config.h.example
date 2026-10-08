@@ -1,0 +1,88 @@
+#pragma once
+
+#include <Arduino.h>
+#include "Logging.h"
+
+/**
+ * @brief Zentrale Projektkonfiguration. Kopiere diese Datei nach Config.h.
+ *
+ * Die lokale Config.h wird absichtlich nicht versioniert, da sie Zugangsdaten
+ * enthalten kann. Aendere Werte in den passenden Unterbereichen.
+ */
+namespace Config {
+
+/// Zugangsdaten fuer das lokale WLAN.
+namespace Wifi {
+static char ssid[] = "REPLACE_WITH_WIFI_NAME";
+static char password[] = "REPLACE_WITH_WIFI_PASSWORD";
+}
+
+/// Verbindungseinstellungen fuer MariaDB oder MySQL.
+namespace Database {
+static char host[] = "192.168.1.100";
+static constexpr uint16_t port = 3306;
+static char name[] = "energy_monitor";
+static char user[] = "esp32_meter";
+static char password[] = "REPLACE_WITH_A_SECRET";
+}
+
+/// Impulserfassung, Pufferschutz und Upload-Zeitplan.
+namespace Runtime {
+/// GPIO-Entprellzeit der Impulszaehler in Millisekunden.
+constexpr unsigned long debounceDelayMs = 50;
+
+/// Verbrauchseinheiten pro erkanntem Impuls.
+constexpr double consumptionPerPulse = 100.0;
+
+/// Uploadtakt in Minuten; muss ein positiver Teiler von 60 sein.
+constexpr uint8_t uploadEveryMinutes = 15;
+
+/// Bei diesem freien NVS-Anteil oder weniger wird sofort synchronisiert.
+constexpr uint8_t minimumFreeNvsPercent = 10;
+
+/// Wartezeit zwischen fehlgeschlagenen Datenbank-Uploadversuchen.
+constexpr unsigned long uploadRetryMs = 30000UL;
+
+/// Wartezeit zwischen Flash-Kapazitaetsabfragen.
+constexpr unsigned long flashMonitorIntervalMs = 60000UL;
+
+/// Wartezeit zwischen Abfragen der Datenbank-Ausgangsstaende.
+constexpr unsigned long databaseReadRetryMs = 30000UL;
+
+/// Mindeststufe der seriellen Protokollausgabe.
+constexpr LogLevel minimumLogLevel = LOG_DEBUG_PLUS;
+
+/// Timeout fuer den initialen WLAN-Verbindungsaufbau.
+constexpr unsigned long wifiConnectionTimeoutMs = 10000UL;
+
+/// Abstand zwischen automatischen WLAN-Reconnect-Versuchen.
+constexpr unsigned long wifiReconnectIntervalMs = 5000UL;
+
+/// Abstand zwischen RSSI-Ausgaben im DEBUG+-Modus.
+constexpr unsigned long wifiSignalLogIntervalMs = 10000UL;
+
+/// Baudrate der seriellen Debug-Ausgabe.
+constexpr unsigned long serialBaudRate = 115200UL;
+
+/// Wartezeit pro Hauptschleifendurchlauf.
+constexpr unsigned long mainLoopDelayMs = 1000UL;
+
+static_assert(
+    uploadEveryMinutes > 0 && 60 % uploadEveryMinutes == 0,
+    "uploadEveryMinutes muss ein positiver Teiler von 60 sein"
+);
+}
+
+/// Zeitzone und Server fuer die NTP-Synchronisation.
+namespace Time {
+/// POSIX-Zeitzone fuer Mitteleuropa mit automatischer Sommerzeit.
+constexpr char timeZone[] = "CET-1CEST,M3.5.0/2,M10.5.0/3";
+
+/// Primaerer NTP-Zeitserver.
+constexpr char ntpServerPrimary[] = "pool.ntp.org";
+
+/// Sekundaerer NTP-Zeitserver als Ausweichquelle.
+constexpr char ntpServerSecondary[] = "time.nist.gov";
+}
+
+}

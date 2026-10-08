@@ -8,7 +8,9 @@ private:
     /// Netzwerkkennung, Zugangsschluessel und Verbindungstimeout.
     const char* _ssid;
     const char* _password;
-    const unsigned long _maxConnectionTime;
+    unsigned long _maxConnectionTime;
+    unsigned long _reconnectInterval;
+    unsigned long _signalLogInterval;
 
     /// Zeitpunkte fuer Reconnect und RSSI-Protokollierung.
     unsigned long _lastReconnectAttempt;
@@ -24,7 +26,9 @@ public:
     WirelessConnection(
         const char* ssid,
         const char* password,
-        unsigned long maxConnectionTime = 10000
+        unsigned long maxConnectionTime,
+        unsigned long reconnectInterval,
+        unsigned long signalLogInterval
     );
 
     /// Startet die Verbindung und wartet bis zum Timeout auf Erfolg.
