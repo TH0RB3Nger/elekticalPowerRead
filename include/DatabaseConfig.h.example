@@ -1,0 +1,7 @@
+#pragma once
+
+static char databaseHost[] = "192.168.1.100";
+static constexpr uint16_t databasePort = 3306;
+static char databaseName[] = "energy_monitor";
+static char databaseUser[] = "esp32_meter";
+static char databasePassword[] = "REPLACE_WITH_A_SECRET";
