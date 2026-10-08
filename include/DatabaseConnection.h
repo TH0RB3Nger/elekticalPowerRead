@@ -3,17 +3,17 @@
 #include <Arduino.h>
 
 /**
- * @brief Ein kumulierter Verbrauchsstand fuer einen einzelnen GPIO-Zaehler.
+ * @brief Verbrauch eines Zaehlers seit dem vorigen erfolgreichen Messpunkt.
  */
 struct ConsumptionRecord {
     /// Feste Datenbank-ID des Zaehlerkanals (4 bis 7).
     uint8_t counterId;
-    /// Kumulierte Verbrauchsmenge fuer diesen Kanal.
-    double totalConsumption;
+    /// Gemessener Verbrauch in kWh seit dem vorigen Zeitstempel.
+    double measuredKWh;
 };
 
 /**
- * @brief Stellt Lese-, Schreib- und Synchronisationsfunktionen bereit.
+ * @brief Verbindet die Firmware mit der Zeitreihentabelle.
  */
 class DatabaseConnection {
 public:
@@ -23,25 +23,6 @@ public:
     /// Prueft, ob die zugrunde liegende Datenbankverbindung aktiv ist.
     bool isConnected() const;
 
-    /// Liest den kumulierten Stand eines einzelnen Zaehlerkanals.
-    bool readConsumption(uint8_t counterId, double& totalConsumption);
-
-    /// Liest die kumulierten Staende aller vorhandenen Zaehlerkanaele.
-    bool readAll(
-        ConsumptionRecord* records,
-        size_t capacity,
-        size_t& recordCount
-    );
-
-    /// Addiert einen Verbrauchswert zum Datenbankstand eines Kanals.
-    bool addConsumption(uint8_t counterId, double amount);
-
-    /// Setzt den Datenbankstand eines Kanals auf einen absoluten Wert.
-    bool setConsumption(uint8_t counterId, double totalConsumption);
-
-    /// Loescht den Datensatz eines Zaehlerkanals.
-    bool deleteCounter(uint8_t counterId);
-
     /**
      * @brief Liefert eine stabile Kennung aus der eFuse-MAC-Adresse.
      * @return Zwölfstellige hexadezimale ESP32-Kennung.
@@ -49,12 +30,12 @@ public:
     String deviceId() const;
 
     /**
-     * @brief Addiert ein ganzes Upload-Buendel genau einmal und atomar.
+     * @brief Speichert ein Messintervall genau einmal und atomar.
      * @param deviceId Stabile Kennung des sendenden ESP32.
      * @param sequence Persistente Sequenznummer des Buendels.
-     * @param records Verbrauchsdifferenzen je Zaehlerkanal.
+     * @param records Verbrauch seit dem jeweils vorigen Zeitstempel.
      * @param recordCount Anzahl der Eintraege in records.
-     * @return true, wenn das Buendel neu oder bereits zuvor verbucht wurde.
+     * @return true, wenn das Intervall neu oder bereits zuvor gespeichert wurde.
      */
     bool addConsumptionBatch(
         const String& deviceId,

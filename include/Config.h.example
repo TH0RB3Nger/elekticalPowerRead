@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <float.h>
 #include "Logging.h"
 
 /**
@@ -56,8 +57,8 @@ constexpr unsigned long minimumPulseDurationMs = 30;
 constexpr unsigned long minimumPulseIntervalMs = 50;
 
 static_assert(
-    resolutionPulsesPerKWh > 0.0,
-    "Die Zaehleraufloesung muss groesser als 0 Impulse/kWh sein"
+    resolutionPulsesPerKWh > 0.0 && resolutionPulsesPerKWh <= DBL_MAX,
+    "Die Zaehleraufloesung muss positiv und endlich sein"
 );
 
 /// Uploadtakt in Minuten; muss ein positiver Teiler von 60 sein.
@@ -71,9 +72,6 @@ constexpr unsigned long uploadRetryMs = 30000UL;
 
 /// Wartezeit zwischen Flash-Kapazitaetsabfragen.
 constexpr unsigned long flashMonitorIntervalMs = 60000UL;
-
-/// Wartezeit zwischen Abfragen der Datenbank-Ausgangsstaende.
-constexpr unsigned long databaseReadRetryMs = 30000UL;
 
 /// Mindeststufe der seriellen Protokollausgabe.
 constexpr LogLevel minimumLogLevel = LOG_DEBUG_PLUS;
@@ -96,6 +94,12 @@ constexpr unsigned long mainLoopDelayMs = 1000UL;
 static_assert(
     uploadEveryMinutes > 0 && 60 % uploadEveryMinutes == 0,
     "uploadEveryMinutes muss ein positiver Teiler von 60 sein"
+);
+
+static_assert(
+    minimumPulseDurationMs <= 4294967UL
+        && minimumPulseIntervalMs <= 4294967UL,
+    "S0-Zeitparameter muessen in den micros()-Messbereich passen"
 );
 }
 

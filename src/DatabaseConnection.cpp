@@ -2,7 +2,7 @@
 
 #include <MySQL_Generic.h>
 #include <WiFi.h>
-#include <cstdlib>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 
@@ -15,33 +15,45 @@
 #endif
 
 namespace {
-/// Tabellenname fuer die vier pro GPIO kumulierten Verbrauchsstaende.
-constexpr char tableName[] = "energy_consumption";
+constexpr size_t expectedCounterCount = 4;
 
-/// WLAN-TCP-Client und MySQL-Protokollverbindung.
 WiFiClient databaseClient;
 MySQL_Connection mysqlConnection(&databaseClient);
 
-/**
- * @brief Begrenzt Schreibzugriffe auf die vier konfigurierten GPIO-Kanaele.
- */
 bool validCounterId(uint8_t counterId) {
     return counterId >= 4 && counterId <= 7;
 }
 
-/**
- * @brief Stellt WLAN- und MySQL-Verbindung sicher, ohne Erfolg zu simulieren.
- */
-bool ensureConnected() {
-    if (mysqlConnection.connected()) {
-        return true;
+bool parseUint64(const char* value, uint64_t& parsed) {
+    if (value == nullptr || *value == '\0') {
+        return false;
     }
 
+    uint64_t result = 0;
+    for (const char* digit = value; *digit != '\0'; ++digit) {
+        if (*digit < '0' || *digit > '9') {
+            return false;
+        }
+        const uint8_t numericDigit = static_cast<uint8_t>(*digit - '0');
+        if (result > (UINT64_MAX - numericDigit) / 10ULL) {
+            return false;
+        }
+        result = result * 10ULL + numericDigit;
+    }
+
+    parsed = result;
+    return true;
+}
+
+bool ensureConnected() {
+    if (mysqlConnection.connected()) {
+        logDebugPlus("Datenbankverbindung ist bereits aktiv");
+        return true;
+    }
     if (WiFi.status() != WL_CONNECTED) {
         logWarning("Datenbankverbindung nicht moeglich: WLAN ist getrennt");
         return false;
     }
-
     if (Config::Database::host[0] == '\0'
         || Config::Database::name[0] == '\0'
         || Config::Database::user[0] == '\0'
@@ -69,83 +81,57 @@ bool ensureConnected() {
         return false;
     }
 
-    logInfo("Mit MariaDB/MySQL verbunden");
+    logInfo(
+        "Mit MariaDB/MySQL verbunden: "
+        + String(Config::Database::host) + ":"
+        + String(Config::Database::port) + "/"
+        + String(Config::Database::name)
+    );
     return true;
 }
 
-/**
- * @brief Fuehrt eine einzelne nicht-transaktionale SQL-Aenderung aus.
- */
-bool executeUpdate(const char* statement) {
-    if (!ensureConnected()) {
-        return false;
-    }
-
-    MySQL_Query query(&mysqlConnection);
-    if (!query.execute(statement)) {
-        logError("Datenbank-Schreibabfrage fehlgeschlagen");
-        mysqlConnection.close();
-        return false;
-    }
-
-    mysqlConnection.close();
-    return true;
-}
-
-/**
- * @brief Fuehrt eine SQL-Anweisung innerhalb einer offenen Transaktion aus.
- */
 bool executeInTransaction(const char* statement) {
     MySQL_Query query(&mysqlConnection);
     if (query.execute(statement)) {
+        logDebugPlus("SQL-Schritt innerhalb der Datenbanktransaktion erfolgreich");
         return true;
     }
-
     logError("Datenbank-Transaktion fehlgeschlagen");
     return false;
 }
 
-/**
- * @brief Bricht eine laufende Transaktion ab und schliesst den TCP-Client.
- */
 void rollbackAndClose() {
+    logWarning("Datenbanktransaktion wird zurueckgerollt");
     if (mysqlConnection.connected()) {
         executeInTransaction("ROLLBACK");
     }
     mysqlConnection.close();
 }
 
-/**
- * @brief Formatiert einen nichtnegativen SQL-Zahlenwert mit Dezimalpunkt.
- */
 bool formatAmount(double amount, char* output, size_t outputSize) {
-    if (amount < 0.0) {
-        logError("Verbrauchswerte duerfen nicht negativ sein");
+    if (!isfinite(amount) || amount < 0.0) {
+        logError("Messwert ist negativ oder nicht endlich");
         return false;
     }
 
-    const int written = snprintf(output, outputSize, "%.6f", amount);
+    const int written = snprintf(output, outputSize, "%.17g", amount);
     if (written < 0 || static_cast<size_t>(written) >= outputSize) {
-        logError("Verbrauchswert kann nicht formatiert werden");
+        logError("Messwert kann nicht formatiert werden");
         return false;
     }
     return true;
 }
 }
 
-/// Baut bei Bedarf eine Datenbankverbindung auf.
 bool DatabaseConnection::connect() {
+    logDebug("Expliziter Datenbankverbindungsaufbau angefordert");
     return ensureConnected();
 }
 
-/// Meldet, ob der TCP-Client zum Datenbankserver noch verbunden ist.
 bool DatabaseConnection::isConnected() const {
     return mysqlConnection.connected();
 }
 
-/**
- * @brief Erzeugt aus der ESP32-eFuse-MAC-Adresse eine stabile Geraete-ID.
- */
 String DatabaseConnection::deviceId() const {
     char identifier[13];
     snprintf(
@@ -157,204 +143,26 @@ String DatabaseConnection::deviceId() const {
     return String(identifier);
 }
 
-/**
- * @brief Liest einen einzelnen kumulierten Zaehlerstand.
- */
-bool DatabaseConnection::readConsumption(
-    uint8_t counterId,
-    double& totalConsumption
-) {
-    if (!validCounterId(counterId)) {
-        logError("Ungueltige Zaehler-ID fuer Datenbankabfrage");
-        return false;
-    }
-    if (!ensureConnected()) {
-        return false;
-    }
-
-    char statement[128];
-    snprintf(
-        statement,
-        sizeof(statement),
-        "SELECT total_consumption FROM %s WHERE counter_id = %u",
-        tableName,
-        counterId
-    );
-
-    MySQL_Query query(&mysqlConnection);
-    if (!query.execute(statement)) {
-        logError("Datenbank-Leseabfrage fehlgeschlagen");
-        mysqlConnection.close();
-        return false;
-    }
-
-    if (query.get_columns() == nullptr) {
-        logError("Spalteninformationen der Datenbankabfrage fehlen");
-        mysqlConnection.close();
-        return false;
-    }
-
-    row_values* row = query.get_next_row();
-    if (row == nullptr) {
-        totalConsumption = 0.0;
-        mysqlConnection.close();
-        return true;
-    }
-
-    totalConsumption = strtod(row->values[0], nullptr);
-    mysqlConnection.close();
-    return true;
-}
-
-/**
- * @brief Liest alle Zaehlerstaende in einen vom Aufrufer bereitgestellten Puffer.
- */
-bool DatabaseConnection::readAll(
-    ConsumptionRecord* records,
-    size_t capacity,
-    size_t& recordCount
-) {
-    recordCount = 0;
-    if (records == nullptr && capacity != 0) {
-        logError("Ungueltiger Ausgabepuffer fuer Datenbankabfrage");
-        return false;
-    }
-    if (!ensureConnected()) {
-        return false;
-    }
-
-    char statement[128];
-    snprintf(
-        statement,
-        sizeof(statement),
-        "SELECT counter_id, total_consumption FROM %s ORDER BY counter_id",
-        tableName
-    );
-
-    MySQL_Query query(&mysqlConnection);
-    if (!query.execute(statement)) {
-        logError("Datenbank-Leseabfrage fehlgeschlagen");
-        mysqlConnection.close();
-        return false;
-    }
-
-    if (query.get_columns() == nullptr) {
-        logError("Spalteninformationen der Datenbankabfrage fehlen");
-        mysqlConnection.close();
-        return false;
-    }
-
-    while (row_values* row = query.get_next_row()) {
-        if (recordCount >= capacity) {
-            logError("Ausgabepuffer zu klein fuer alle Datenbankdatensaetze");
-            mysqlConnection.close();
-            return false;
-        }
-
-        records[recordCount].counterId =
-            static_cast<uint8_t>(strtoul(row->values[0], nullptr, 10));
-        records[recordCount].totalConsumption =
-            strtod(row->values[1], nullptr);
-        ++recordCount;
-    }
-
-    mysqlConnection.close();
-    return true;
-}
-
-/**
- * @brief Addiert einen Verbrauchswert mit einem einzelnen SQL-Upsert.
- */
-bool DatabaseConnection::addConsumption(uint8_t counterId, double amount) {
-    if (!validCounterId(counterId)) {
-        logError("Ungueltige Zaehler-ID fuer Datenbank-Schreibvorgang");
-        return false;
-    }
-
-    char formattedAmount[32];
-    if (!formatAmount(amount, formattedAmount, sizeof(formattedAmount))) {
-        return false;
-    }
-
-    char statement[256];
-    snprintf(
-        statement,
-        sizeof(statement),
-        "INSERT INTO %s (counter_id, total_consumption) VALUES (%u, %s) "
-        "ON DUPLICATE KEY UPDATE total_consumption = "
-        "total_consumption + VALUES(total_consumption)",
-        tableName,
-        counterId,
-        formattedAmount
-    );
-    return executeUpdate(statement);
-}
-
-/**
- * @brief Fuegt einen absoluten Stand ein oder ersetzt den bestehenden Stand.
- */
-bool DatabaseConnection::setConsumption(
-    uint8_t counterId,
-    double totalConsumption
-) {
-    if (!validCounterId(counterId)) {
-        logError("Ungueltige Zaehler-ID fuer Datenbank-Schreibvorgang");
-        return false;
-    }
-
-    char formattedAmount[32];
-    if (!formatAmount(totalConsumption, formattedAmount, sizeof(formattedAmount))) {
-        return false;
-    }
-
-    char statement[256];
-    snprintf(
-        statement,
-        sizeof(statement),
-        "INSERT INTO %s (counter_id, total_consumption) VALUES (%u, %s) "
-        "ON DUPLICATE KEY UPDATE total_consumption = VALUES(total_consumption)",
-        tableName,
-        counterId,
-        formattedAmount
-    );
-    return executeUpdate(statement);
-}
-
-/**
- * @brief Entfernt einen einzelnen Zaehlerdatensatz.
- */
-bool DatabaseConnection::deleteCounter(uint8_t counterId) {
-    if (!validCounterId(counterId)) {
-        logError("Ungueltige Zaehler-ID fuer Datenbank-Loeschvorgang");
-        return false;
-    }
-
-    char statement[128];
-    snprintf(
-        statement,
-        sizeof(statement),
-        "DELETE FROM %s WHERE counter_id = %u",
-        tableName,
-        counterId
-    );
-    return executeUpdate(statement);
-}
-
 bool DatabaseConnection::addConsumptionBatch(
     const String& deviceIdentifier,
     uint64_t sequence,
     const ConsumptionRecord* records,
     size_t recordCount
 ) {
+    logDebug(
+        "Validiere Messintervall; Sequenz "
+        + String(static_cast<unsigned long long>(sequence))
+        + ", Datensaetze " + String(recordCount)
+    );
     if (deviceIdentifier.length() != 12
         || sequence == 0
         || records == nullptr
-        || recordCount != 4) {
-        logError("Ungueltige Parameter fuer den Datenbank-Sammelupload");
+        || recordCount != expectedCounterCount) {
+        logError("Ungueltige Parameter fuer den Messintervall-Upload");
         return false;
     }
 
-    char quotedDeviceId[15];
+    char quotedDeviceId[13];
     for (size_t index = 0; index < 12; ++index) {
         const char value = deviceIdentifier[index];
         if (!isxdigit(static_cast<unsigned char>(value))) {
@@ -365,15 +173,29 @@ bool DatabaseConnection::addConsumptionBatch(
     }
     quotedDeviceId[12] = '\0';
 
-    if (!ensureConnected()) {
-        return false;
+    bool seenCounter[expectedCounterCount] = {};
+    char formattedAmounts[expectedCounterCount][32];
+    for (size_t index = 0; index < recordCount; ++index) {
+        const uint8_t counterId = records[index].counterId;
+        if (!validCounterId(counterId) || seenCounter[counterId - 4]) {
+            logError("Messintervall enthaelt ungueltige oder doppelte Zaehler-IDs");
+            return false;
+        }
+        seenCounter[counterId - 4] = true;
+        if (!formatAmount(
+                records[index].measuredKWh,
+                formattedAmounts[index],
+                sizeof(formattedAmounts[index]))) {
+            return false;
+        }
     }
 
-    bool transactionOpen = false;
-    if (!executeInTransaction("START TRANSACTION")) {
+    if (!ensureConnected()
+        || !executeInTransaction("START TRANSACTION")) {
         mysqlConnection.close();
         return false;
     }
+    logDebug("Datenbanktransaktion fuer Messintervall gestartet");
 
     char statement[256];
     snprintf(
@@ -405,12 +227,12 @@ bool DatabaseConnection::addConsumptionBatch(
         }
 
         row_values* row = query.get_next_row();
-        if (row == nullptr || row->values[0] == nullptr) {
-            logError("Datenbank-Synchronisationsstand fehlt");
+        if (row == nullptr || row->values[0] == nullptr
+            || !parseUint64(row->values[0], lastSequence)) {
+            logError("Datenbank-Synchronisationssequenz ist ungueltig");
             rollbackAndClose();
             return false;
         }
-        lastSequence = strtoull(row->values[0], nullptr, 10);
     }
 
     if (sequence <= lastSequence) {
@@ -419,41 +241,31 @@ bool DatabaseConnection::addConsumptionBatch(
             return false;
         }
         mysqlConnection.close();
-        logInfo("Datenbank hat dieses Upload-Buendel bereits verbucht");
+        logInfo("Messintervall wurde bereits gespeichert; Wiederholung idempotent bestaetigt");
         return true;
     }
-
-    if (sequence != lastSequence + 1) {
-        logError("Upload-Sequenz ist nicht fortlaufend; Buendel wird nicht addiert");
+    if (lastSequence == UINT64_MAX || sequence != lastSequence + 1) {
+        logError("Messintervall-Sequenz ist nicht fortlaufend");
         rollbackAndClose();
         return false;
     }
 
-    bool seenCounter[4] = {false, false, false, false};
+    if (!executeInTransaction("SET @energy_measurement_time = UTC_TIMESTAMP(6)")) {
+        rollbackAndClose();
+        return false;
+    }
+
     for (size_t index = 0; index < recordCount; ++index) {
-        const uint8_t counterId = records[index].counterId;
-        if (!validCounterId(counterId) || seenCounter[counterId - 4]) {
-            logError("Upload-Buendel enthaelt ungueltige oder doppelte Zaehler-IDs");
-            rollbackAndClose();
-            return false;
-        }
-        seenCounter[counterId - 4] = true;
-
-        char formattedAmount[32];
-        if (!formatAmount(records[index].totalConsumption, formattedAmount, sizeof(formattedAmount))) {
-            rollbackAndClose();
-            return false;
-        }
-
         snprintf(
             statement,
             sizeof(statement),
-            "INSERT INTO %s (counter_id, total_consumption) VALUES (%u, %s) "
-            "ON DUPLICATE KEY UPDATE total_consumption = "
-            "total_consumption + VALUES(total_consumption)",
-            tableName,
-            counterId,
-            formattedAmount
+            "INSERT INTO energy_measurements "
+            "(device_id, counter_id, sequence, measured_at, consumption_kwh) "
+            "VALUES ('%s', %u, %llu, @energy_measurement_time, %s)",
+            quotedDeviceId,
+            records[index].counterId,
+            static_cast<unsigned long long>(sequence),
+            formattedAmounts[index]
         );
         if (!executeInTransaction(statement)) {
             rollbackAndClose();
@@ -476,6 +288,10 @@ bool DatabaseConnection::addConsumptionBatch(
     }
 
     mysqlConnection.close();
-    logInfo("Datenbank-Sammelupload atomar verbucht");
+    logInfo(
+        "Messintervall atomar gespeichert; UTC-Zeitstempel durch Datenbank "
+        "gesetzt, Sequenz "
+        + String(static_cast<unsigned long long>(sequence))
+    );
     return true;
 }

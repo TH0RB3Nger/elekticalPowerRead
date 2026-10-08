@@ -15,12 +15,11 @@ public:
     explicit UploadScheduler(uint8_t intervalMinutes);
 
     /**
-     * @brief Aktualisiert den Zeitplan und merkt faellige Uploads vor.
+     * @brief Aktualisiert den Zeitplan und merkt faellige Messpunkte vor.
      * @param currentTime Synchronisierte Unix-Zeit.
-     * @param hasPendingData Gibt an, ob ein Upload Daten zu senden haette.
-     * @return true, wenn ein zeitgesteuerter Upload ansteht.
+     * @return true, wenn ein zeitgesteuerter Messpunkt ansteht.
      */
-    bool update(time_t currentTime, bool hasPendingData);
+    bool update(time_t currentTime);
 
     /**
      * @brief Meldet, ob ein faelliger Zeitplan-Upload vorgemerkt ist.

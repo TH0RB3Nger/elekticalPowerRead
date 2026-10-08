@@ -15,6 +15,8 @@ private:
     /// Zeitpunkte fuer Reconnect und RSSI-Protokollierung.
     unsigned long _lastReconnectAttempt;
     unsigned long _lastSignalLog;
+    wl_status_t _lastReportedStatus;
+    bool _statusReported;
 
     /// Verhindert doppelte Registrierung des globalen WLAN-Eventhandlers.
     bool _eventHandlerRegistered;

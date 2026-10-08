@@ -31,4 +31,7 @@ private:
 
     /// Verhindert wiederholte Erfolgsmeldungen in jeder Hauptschleife.
     bool _synchronizationLogged = false;
+
+    /// Begrenzt Meldungen beim Warten auf den ersten NTP-Zeitabgleich.
+    unsigned long _lastWaitingLog = 0;
 };

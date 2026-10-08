@@ -6,8 +6,9 @@
 #include "Logging.h"
 
 namespace {
-/// Kennung zur Erkennung eines gueltigen Pufferschemas im Flash.
-constexpr uint32_t stateMagic = 0x45504D31;
+/// Kennung zur Erkennung der aktuellen und vorherigen Flash-Pufferversion.
+constexpr uint32_t stateMagic = 0x45504D32;
+constexpr uint32_t legacyStateMagic = 0x45504D31;
 
 /// Feste ID des ersten Zaehlerkanals; unabhaengig von der GPIO-Zuordnung.
 constexpr uint8_t firstCounterId = 4;
@@ -23,6 +24,7 @@ Preferences preferences;
 }
 
 bool PersistentConsumptionBuffer::begin() {
+    logDebug("Oeffne NVS-Namensraum fuer Verbrauchspuffer");
     if (!preferences.begin(preferencesNamespace, false)) {
         logError("NVS-Namensraum fuer den Verbrauchspuffer konnte nicht geoeffnet werden");
         return false;
@@ -30,8 +32,10 @@ bool PersistentConsumptionBuffer::begin() {
 
     const size_t storedSize = preferences.getBytesLength(stateKey);
     if (storedSize == 0) {
+        logDebug("Kein gespeicherter Puffer gefunden; initialisiere neuen Zustand");
         _state.magic = stateMagic;
         _state.nextSequence = 1;
+        _state.immediateUploadRequested = 0;
         for (double& amount : _state.pendingConsumption) {
             amount = 0.0;
         }
@@ -45,10 +49,43 @@ bool PersistentConsumptionBuffer::begin() {
         return true;
     }
 
+    if (storedSize == sizeof(LegacyState)) {
+        LegacyState legacy{};
+        if (preferences.getBytes(stateKey, &legacy, sizeof(legacy)) != sizeof(legacy)
+            || legacy.magic != legacyStateMagic
+            || legacy.nextSequence == 0) {
+            logError("Vorheriger Flash-Puffer ist ungueltig; Daten bleiben erhalten");
+            return false;
+        }
+        for (const double amount : legacy.pendingConsumption) {
+            if (!isfinite(amount) || amount < 0.0) {
+                logError(
+                    "Vorheriger Flash-Puffer enthaelt einen ungueltigen Verbrauchswert"
+                );
+                return false;
+            }
+        }
+
+        _state.magic = stateMagic;
+        _state.nextSequence = legacy.nextSequence;
+        _state.immediateUploadRequested = 0;
+        for (size_t index = 0; index < counterCount; ++index) {
+            _state.pendingConsumption[index] = legacy.pendingConsumption[index];
+        }
+        _ready = true;
+        if (!persist(_state)) {
+            _ready = false;
+            return false;
+        }
+        logInfo("Flash-Puffer auf das aktuelle NVS-Format migriert");
+        return true;
+    }
+
     if (storedSize != sizeof(State)
         || preferences.getBytes(stateKey, &_state, sizeof(State)) != sizeof(State)
         || _state.magic != stateMagic
-        || _state.nextSequence == 0) {
+        || _state.nextSequence == 0
+        || _state.immediateUploadRequested > 1) {
         logError(
             "Gespeicherter Flash-Puffer ist ungueltig; "
             "Daten werden nicht automatisch ueberschrieben"
@@ -64,7 +101,16 @@ bool PersistentConsumptionBuffer::begin() {
     }
 
     _ready = true;
-    logInfo("Dauerhafter Flash-Puffer geladen");
+    logInfo(
+        "Dauerhafter Flash-Puffer geladen; naechste Sequenz "
+        + String(static_cast<unsigned long long>(_state.nextSequence))
+    );
+    logDebugPlus(
+        "Ausstehende Werte: ID 4=" + String(_state.pendingConsumption[0], 6)
+        + ", ID 5=" + String(_state.pendingConsumption[1], 6)
+        + ", ID 6=" + String(_state.pendingConsumption[2], 6)
+        + ", ID 7=" + String(_state.pendingConsumption[3], 6)
+    );
     return true;
 }
 
@@ -87,12 +133,45 @@ bool PersistentConsumptionBuffer::addConsumption(
     State next = _state;
     const size_t index = counterId - firstCounterId;
     next.pendingConsumption[index] += amount;
-    if (!isfinite(next.pendingConsumption[index])) {
-        logError("Verbrauchspuffer wuerde den Zahlenbereich ueberschreiten");
+    if (!isfinite(next.pendingConsumption[index])
+        || (amount > 0.0
+            && next.pendingConsumption[index] == _state.pendingConsumption[index])) {
+        logError(
+            "Verbrauchspuffer wuerde den Zahlenbereich ueberschreiten "
+            "oder die Addition waere nicht mehr darstellbar"
+        );
         return false;
     }
 
+    logDebugPlus(
+        "Puffere " + String(amount, 6) + " kWh fuer Zaehler-ID "
+        + String(counterId) + "; neuer Zwischenstand "
+        + String(next.pendingConsumption[index], 6) + " kWh"
+    );
     return persist(next);
+}
+
+bool PersistentConsumptionBuffer::requestImmediateUpload() {
+    if (!_ready) {
+        logError("Sofortiger Upload kann ohne initialisierten NVS-Puffer nicht vorgemerkt werden");
+        return false;
+    }
+    if (_state.immediateUploadRequested != 0) {
+        return true;
+    }
+
+    State next = _state;
+    next.immediateUploadRequested = 1;
+    if (!persist(next)) {
+        logError("Sofortige Uploadanforderung konnte nicht dauerhaft gespeichert werden");
+        return false;
+    }
+    logWarning("Sofortiger Datenbankupload dauerhaft vorgemerkt");
+    return true;
+}
+
+bool PersistentConsumptionBuffer::isImmediateUploadRequested() const {
+    return _ready && _state.immediateUploadRequested != 0;
 }
 
 /**
@@ -152,14 +231,23 @@ bool PersistentConsumptionBuffer::getPendingBatch(
         logError("Ungueltiger Ausgabepuffer fuer Flash-Daten");
         return false;
     }
+    if (_state.nextSequence == UINT64_MAX) {
+        logError("Uploadsequenz ist ausgeschoepft; Flash-Puffer bleibt erhalten");
+        return false;
+    }
 
     for (size_t index = 0; index < counterCount; ++index) {
         records[index].counterId = firstCounterId + index;
-        records[index].totalConsumption = _state.pendingConsumption[index];
+        records[index].measuredKWh = _state.pendingConsumption[index];
     }
 
     recordCount = counterCount;
     sequence = _state.nextSequence;
+    logDebug(
+        "Flash-Batch zusammengestellt: Sequenz "
+        + String(static_cast<unsigned long long>(sequence))
+        + ", Datensaetze " + String(recordCount)
+    );
     return true;
 }
 
@@ -175,16 +263,25 @@ bool PersistentConsumptionBuffer::markBatchUploaded(uint64_t sequence) {
     for (double& amount : next.pendingConsumption) {
         amount = 0.0;
     }
+    next.immediateUploadRequested = 0;
 
+    logDebug(
+        "Bestaetigten Batch loeschen und Sequenz weiterschalten: "
+        + String(static_cast<unsigned long long>(sequence))
+    );
     return persist(next);
 }
 
 bool PersistentConsumptionBuffer::persist(const State& next) {
-    if (!_ready && next.magic != stateMagic) {
+    if (next.magic != stateMagic || next.immediateUploadRequested > 1) {
         logError("Flash-Puffer kann nicht gespeichert werden: Zustand ungueltig");
         return false;
     }
 
+    logDebugPlus(
+        "Schreibe " + String(sizeof(State))
+        + " Bytes in den dauerhaften NVS-Puffer"
+    );
     const size_t written = preferences.putBytes(stateKey, &next, sizeof(State));
     if (written != sizeof(State)) {
         logError("Flash-Puffer konnte nicht vollstaendig gespeichert werden");
@@ -192,5 +289,6 @@ bool PersistentConsumptionBuffer::persist(const State& next) {
     }
 
     _state = next;
+    logDebugPlus("NVS-Puffer erfolgreich aktualisiert");
     return true;
 }

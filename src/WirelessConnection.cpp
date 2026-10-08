@@ -101,6 +101,8 @@ WirelessConnection::WirelessConnection(
       _signalLogInterval(signalLogInterval),
       _lastReconnectAttempt(0),
       _lastSignalLog(0),
+      _lastReportedStatus(WL_IDLE_STATUS),
+      _statusReported(false),
       _eventHandlerRegistered(false) {}
 
 /**
@@ -108,10 +110,12 @@ WirelessConnection::WirelessConnection(
  */
 bool WirelessConnection::connect() {
     if (!_eventHandlerRegistered) {
+        logDebug("Registriere WLAN-Eventhandler");
         WiFi.onEvent(handleWiFiEvent);
         _eventHandlerRegistered = true;
     }
 
+    logDebug("Initialisiere WLAN-Station und automatische Wiederverbindung");
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);
     WiFi.persistent(false);
@@ -138,7 +142,8 @@ bool WirelessConnection::connect() {
 
 /// Meldet, ob der ESP32 derzeit mit einem Zugangspunkt verbunden ist.
 bool WirelessConnection::isConnected() const {
-    return WiFi.status() == WL_CONNECTED;
+    const bool connected = WiFi.status() == WL_CONNECTED;
+    return connected;
 }
 
 /**
@@ -158,7 +163,7 @@ void WirelessConnection::maintainConnection() {
 
     _lastReconnectAttempt = now;
     logWarning(
-        "WLAN getrennt. Neuer Verbindungsversuch. Status: "
+        "WLAN getrennt; starte Reconnect. Status: "
         + String(getWiFiStatusName(status))
     );
 
@@ -171,10 +176,15 @@ void WirelessConnection::maintainConnection() {
  * @brief Protokolliert den Status und im Debug+-Modus periodisch den RSSI.
  */
 void WirelessConnection::printStatus() {
-    logDebug("WiFi-Status: " + String(getWiFiStatusName(WiFi.status())));
+    const wl_status_t status = WiFi.status();
+    if (!_statusReported || status != _lastReportedStatus) {
+        _statusReported = true;
+        _lastReportedStatus = status;
+        logDebug("WLAN-Statuswechsel: " + String(getWiFiStatusName(status)));
+    }
 
     const unsigned long now = millis();
-    if (WiFi.status() == WL_CONNECTED
+    if (status == WL_CONNECTED
         && now - _lastSignalLog >= _signalLogInterval) {
         _lastSignalLog = now;
         logDebugPlus("WLAN-Signalstaerke: " + String(WiFi.RSSI()) + " dBm");
@@ -200,13 +210,13 @@ void WirelessConnection::processEvents() {
         logDebugPlus("WLAN-Station gestartet");
     }
     if (events & PENDING_STA_CONNECTED) {
-        logDebugPlus("Mit WLAN-Zugangspunkt verbunden");
+        logInfo("Mit WLAN-Zugangspunkt verbunden");
     }
     if (events & PENDING_STA_GOT_IP) {
-        logDebugPlus("IP-Adresse erhalten: " + IPAddress(ipAddress).toString());
+        logInfo("IP-Adresse erhalten: " + IPAddress(ipAddress).toString());
     }
     if (events & PENDING_STA_DISCONNECTED) {
-        logDebugPlus("WLAN-Verbindung getrennt; Grundcode: " + String(reason));
+        logWarning("WLAN-Verbindung getrennt; Grundcode: " + String(reason));
     }
     if (events & PENDING_STA_LOST_IP) {
         logDebugPlus("IP-Adresse verloren");

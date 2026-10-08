@@ -7,7 +7,7 @@ NvsStorageMonitor::NvsStorageMonitor(
     unsigned long checkIntervalMs
 )
     : _minimumFreePercent(minimumFreePercent > 100 ? 100 : minimumFreePercent),
-      _checkIntervalMs(checkIntervalMs) {}
+    _checkIntervalMs(checkIntervalMs) {}
 
 bool NvsStorageMonitor::update(
     const PersistentConsumptionBuffer& buffer,
@@ -17,6 +17,7 @@ bool NvsStorageMonitor::update(
         return _statsAvailable;
     }
     _lastCheck = now;
+    logDebugPlus("Pruefe NVS-Restkapazitaet");
 
     uint32_t freeEntries = 0;
     uint32_t totalEntries = 0;
@@ -32,7 +33,7 @@ bool NvsStorageMonitor::update(
         static_cast<uint64_t>(freeEntries) * 100ULL
         <= static_cast<uint64_t>(totalEntries) * _minimumFreePercent;
 
-    logInfo(
+    logDebug(
         "NVS frei: " + String(freeEntries) + "/" + String(totalEntries)
         + " Eintraege (" + String(freePercent) + " %)"
     );

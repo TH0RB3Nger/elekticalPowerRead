@@ -10,20 +10,25 @@ UploadScheduler::UploadScheduler(uint8_t intervalMinutes)
     }
 }
 
-bool UploadScheduler::update(time_t currentTime, bool hasPendingData) {
+bool UploadScheduler::update(time_t currentTime) {
+    if (currentTime < 0) {
+        logError("Ungueltige negative Systemzeit fuer Upload-Zeitplan");
+        return false;
+    }
+
     const time_t intervalSeconds =
         static_cast<time_t>(_intervalMinutes) * 60;
     const time_t currentSlot = currentTime / intervalSeconds;
 
     if (_observedSlot == -1) {
         _observedSlot = currentSlot;
+        logDebug("Upload-Zeitplan initialisiert");
 
         struct tm localTime;
-        if (hasPendingData
-            && localtime_r(&currentTime, &localTime) != nullptr
+        if (localtime_r(&currentTime, &localTime) != nullptr
             && localTime.tm_min % _intervalMinutes == 0) {
             _due = true;
-            logInfo("NTP-Synchronisation erfolgte waehrend eines Upload-Zeitpunkts");
+            logInfo("NTP-Synchronisation erfolgte waehrend eines Messzeitpunkts");
         }
         return _due;
     }
@@ -33,17 +38,13 @@ bool UploadScheduler::update(time_t currentTime, bool hasPendingData) {
     }
 
     _observedSlot = currentSlot;
-    if (!hasPendingData) {
-        return _due;
-    }
-
     _due = true;
     struct tm localTime;
     char formattedTime[24] = "unbekannte Zeit";
     if (localtime_r(&currentTime, &localTime) != nullptr) {
         strftime(formattedTime, sizeof(formattedTime), "%H:%M:%S %Z", &localTime);
     }
-    logInfo("Geplanter Upload-Zeitpunkt erreicht: " + String(formattedTime));
+    logInfo("Geplanter Messzeitpunkt erreicht: " + String(formattedTime));
     return _due;
 }
 
@@ -53,4 +54,5 @@ bool UploadScheduler::isDue() const {
 
 void UploadScheduler::markCompleted() {
     _due = false;
+    logDebug("Vorgemerkter Upload-Zeitpunkt nach Erfolg abgeschlossen");
 }

@@ -15,6 +15,11 @@ void NtpClock::begin() {
         return;
     }
 
+    logDebug(
+        "Richte SNTP ein; Server: "
+        + String(Config::Time::ntpServerPrimary) + ", "
+        + String(Config::Time::ntpServerSecondary)
+    );
     configTzTime(
         Config::Time::timeZone,
         Config::Time::ntpServerPrimary,
@@ -26,7 +31,8 @@ void NtpClock::begin() {
 
 bool NtpClock::getTime(time_t& currentTime) const {
     currentTime = time(nullptr);
-    return _started && currentTime >= plausibleEpoch;
+    const bool plausible = _started && currentTime >= plausibleEpoch;
+    return plausible;
 }
 
 void NtpClock::logStatus() {
@@ -36,6 +42,11 @@ void NtpClock::logStatus() {
 
     time_t currentTime;
     if (!getTime(currentTime)) {
+        const unsigned long now = millis();
+        if (_lastWaitingLog == 0 || now - _lastWaitingLog >= 30000UL) {
+            _lastWaitingLog = now;
+            logDebug("NTP-Zeit noch nicht synchronisiert; warte auf Zeitserver");
+        }
         return;
     }
 

@@ -7,8 +7,8 @@
 /**
  * @brief Speichert noch nicht bestaetigte Zaehlerwerte dauerhaft im ESP32-NVS.
  *
- * Der Speicher wird erst nach erfolgreichem Datenbank-Upload und anschliessender
- * erfolgreicher Abfrage der Datenbankstaende zurueckgesetzt.
+ * Der Speicher wird erst nach dem erfolgreichen Commit des Messintervalls
+ * zurueckgesetzt.
  */
 class PersistentConsumptionBuffer {
 public:
@@ -25,6 +25,12 @@ public:
      * @return true, wenn der neue Pufferstand dauerhaft gespeichert wurde.
      */
     bool addConsumption(uint8_t counterId, double amount);
+
+    /// Persistiert eine sofortige Uploadanforderung zusammen mit dem Pufferstatus.
+    bool requestImmediateUpload();
+
+    /// Meldet, ob ein sofortiger Upload dauerhaft vorgemerkt ist.
+    bool isImmediateUploadRequested() const;
 
     /**
      * @brief Ermittelt die freie Kapazitaet der Standard-NVS-Partition.
@@ -70,6 +76,14 @@ public:
 private:
     /// Versionierte Datenstruktur, die als einzelner NVS-Wert geschrieben wird.
     struct State {
+        uint32_t magic;
+        uint64_t nextSequence;
+        double pendingConsumption[4];
+        uint8_t immediateUploadRequested;
+    };
+
+    /// Vorherige NVS-Version fuer verlustfreie Migration auf das neue Statusfeld.
+    struct LegacyState {
         uint32_t magic;
         uint64_t nextSequence;
         double pendingConsumption[4];
