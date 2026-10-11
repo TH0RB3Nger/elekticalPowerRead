@@ -147,7 +147,7 @@ bool WirelessConnection::isConnected() const {
 }
 
 /**
- * @brief Versucht nach Verbindungsverlust im Abstand von fuenf Sekunden erneut
+ * @brief Versucht nach Verbindungsverlust im konfigurierten Abstand erneut,
  *        eine Verbindung aufzubauen.
  */
 void WirelessConnection::maintainConnection() {

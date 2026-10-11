@@ -1,20 +1,31 @@
 # Elektical Power Read
 
 ESP32-basierter Stromverbrauchszaehler mit vier konfigurierbaren
-Impulseingaengen. Er puffert neue Verbrauchswerte dauerhaft im NVS und
-uebertraegt sie gebuendelt an MariaDB/MySQL. Uploads erfolgen an festen
-Viertelstundenzeitpunkten in der Zeitzone Europe/Berlin. Ein niedriger NVS-
-Freispeicheranteil kann einen zusaetzlichen, sofortigen Upload ausloesen.
+Impulseingaengen. Neue Verbrauchswerte werden standardmaessig im RAM gepuffert
+(optional dauerhaft im NVS) und gebuendelt an MariaDB/MySQL uebertragen. Uploads
+erfolgen an festen Viertelstundenzeitpunkten in der Zeitzone Europe/Berlin. Im
+NVS-Modus kann wenig NVS-Freispeicher einen zusaetzlichen Upload ausloesen. Im
+RAM-Modus wird stattdessen die freie Heap-Reserve ueberwacht.
 
 ## Inhalt
 
-- [Fuer Nutzer: Voraussetzungen und Einrichtung](#fuer-nutzer-voraussetzungen-und-einrichtung)
-- [Fuer Entwickler: Projektstruktur](#fuer-entwickler-projektstruktur)
-- [Ablauf und Ausfallsicherheit](#ablauf-und-ausfallsicherheit)
-- [Konfiguration](#konfiguration)
-- [Build, Upload und serielle Ausgabe](#build-upload-und-serielle-ausgabe)
-- [Logging und Fehlerbehebung](#logging-und-fehlerbehebung)
-- [Sicherheit und Betriebshinweise](#sicherheit-und-betriebshinweise)
+- [Elektical Power Read](#elektical-power-read)
+  - [Inhalt](#inhalt)
+  - [Fuer Nutzer: Voraussetzungen und Einrichtung](#fuer-nutzer-voraussetzungen-und-einrichtung)
+    - [Hardware und Dienste](#hardware-und-dienste)
+    - [Schematische S0-Verdrahtung](#schematische-s0-verdrahtung)
+    - [1. Datenbank vorbereiten](#1-datenbank-vorbereiten)
+    - [2. Globale Konfiguration anlegen](#2-globale-konfiguration-anlegen)
+    - [3. Firmware bauen und hochladen](#3-firmware-bauen-und-hochladen)
+    - [4. Betrieb kontrollieren](#4-betrieb-kontrollieren)
+  - [Fuer Entwickler: Projektstruktur](#fuer-entwickler-projektstruktur)
+    - [RGB-Statusanzeige](#rgb-statusanzeige)
+  - [Ablauf und Ausfallsicherheit](#ablauf-und-ausfallsicherheit)
+    - [Ueberlauf- und Wertebereichsschutz](#ueberlauf--und-wertebereichsschutz)
+  - [Konfiguration](#konfiguration)
+  - [Build, Upload und serielle Ausgabe](#build-upload-und-serielle-ausgabe)
+  - [Logging und Fehlerbehebung](#logging-und-fehlerbehebung)
+  - [Sicherheit und Betriebshinweise](#sicherheit-und-betriebshinweise)
 
 ## Fuer Nutzer: Voraussetzungen und Einrichtung
 
@@ -123,8 +134,8 @@ Zeiteinstellungen in den passenden Bereichen ein:
 - `Config::Database`: Host, Port, Datenbank, Benutzer und Passwort.
 - `Config::Counters`: GPIO-Pin fuer jeden der vier Impulszaehler.
 - `Config::Runtime`: Impulsfaktor, Entprellzeit, Uploadtakt,
-  NVS-Schwelle, Wiederholungsintervalle, WLAN-Timeouts, Logging-Stufe und
-  serielle Ausgabe.
+   Pufferspeicher (`useNvsConsumptionBuffer`), RAM-/NVS-Schwellen,
+   Wiederholungsintervalle, WLAN-Timeouts, Logging-Stufe und serielle Ausgabe.
 - `Config::Time`: Zeitzone und NTP-Server.
 
 Die echte `include/Config.h` wird von Git ignoriert, da sie Zugangsdaten
@@ -132,6 +143,10 @@ enthalten kann. Nur `Config.h.example` wird versioniert. Die Firmware bricht
 beim Kompilieren mit einem Hinweis ab, wenn die lokale Konfiguration fehlt.
 Nach Aenderungen an `Config.h` muss die Firmware neu gebaut und hochgeladen
 werden; es handelt sich nicht um eine zur Laufzeit geladene Konfiguration.
+`Config::Runtime::useNvsConsumptionBuffer = false` waehlt RAM (Standard); bei
+`true` wird jeder neue Verbrauchswert im NVS gesichert. Im RAM-Modus gehen noch
+nicht hochgeladene Werte bei Stromverlust oder Neustart verloren. Die Upload-
+Sequenz bleibt trotzdem im NVS gespeichert.
 
 ### 3. Firmware bauen und hochladen
 
@@ -145,7 +160,7 @@ pio device monitor --baud 115200
 ```
 
 Waehle bei mehreren angeschlossenen Boards den richtigen seriellen Port in
-PlatformIO. Nach dem Start sollten serielle Meldungen fuer den NVS-Puffer,
+PlatformIO. Nach dem Start sollten serielle Meldungen fuer den gewaehlten Puffer,
 die WLAN-Verbindung und die NTP-Synchronisation erscheinen. Ein Datenbankupload
 ist erst moeglich, wenn das SQL-Schema vorbereitet und der ESP32 mit dem Server
 verbunden ist.
@@ -153,10 +168,10 @@ verbunden ist.
 ### 4. Betrieb kontrollieren
 
 Die serielle Ausgabe zeigt WLAN-Events, Datenbankverbindungsfehler, NTP-Status,
-NVS-Kapazitaet und Upload-Ergebnisse entsprechend der eingestellten Logging-
-Stufe. Standardmaessig wird der NVS-Speicher einmal pro Minute ueberprueft.
-Ein erfolgreicher Datenbank-Commit bestaetigt das Messintervall und entfernt
-erst dann den zugehoerigen Flash-Puffer.
+Speicherstand und Upload-Ergebnisse entsprechend der eingestellten Logging-
+Stufe. Der freie NVS-Platz oder RAM-Heap wird je nach Puffermodus
+standardmaessig einmal pro Minute geprueft. Ein erfolgreicher Datenbank-Commit
+bestaetigt das Messintervall und entfernt erst dann den zugehoerigen Puffer.
 
 ## Fuer Entwickler: Projektstruktur
 
@@ -168,10 +183,14 @@ erst dann den zugehoerigen Flash-Puffer.
 | `src/CountPin.cpp`, `include/CountPin.h` | S0-Impulszaehler: aktive Pulsdauer, Signalpolaritaet, Mindestabstand und Aufloesungsumrechnung. |
 | `src/Logging.cpp`, `include/Logging.h` | Zeitgestempelte Protokollierung mit konfigurierbaren Stufen. |
 | `src/WirelessConnection.cpp`, `include/WirelessConnection.h` | WLAN-Verbindung, Reconnects, Events und Signalstaerke. |
+| `src/StatusLed.cpp`, `include/StatusLed.h` | RGB-Statusanzeige; unabhaengige LED-Aufgabe fuer Blinksignale waehrend blockierender Uploads. |
 | `src/NtpClock.cpp`, `include/NtpClock.h` | NTP-Start, Plausibilitaetspruefung und Europe/Berlin-Systemzeit. |
 | `src/UploadScheduler.cpp`, `include/UploadScheduler.h` | Faelligkeitsverwaltung fuer feste Upload-Zeitpunkte. |
 | `src/NvsStorageMonitor.cpp`, `include/NvsStorageMonitor.h` | Periodische NVS-Statistik und Schwellwertpruefung. |
-| `src/PersistentConsumptionBuffer.cpp`, `include/PersistentConsumptionBuffer.h` | Dauerhafter, sequenzierter Verbrauchspuffer im NVS. |
+| `src/RamStorageMonitor.cpp`, `include/RamStorageMonitor.h` | Periodische Heap-Statistik und RAM-Reservewarnung. |
+| `src/ConsumptionBuffer.cpp`, `include/ConsumptionBuffer.h` | Modusneutraler Verbrauchspuffer fuer RAM oder NVS. |
+| `include/ConsumptionBufferState.h` | Gemeinsames Datenformat fuer RAM-Zustand und NVS-Checkpoints. |
+| `src/NvsConsumptionStore.cpp`, `include/NvsConsumptionStore.h` | NVS-Laden, Migration und Checkpoint-Schreibvorgaenge. |
 | `src/ConsumptionSync.cpp`, `include/ConsumptionSync.h` | Zeitreihen-Upload und bestaetigungsabhaengige Pufferloeschung. |
 | `src/DatabaseConnection.cpp`, `include/DatabaseConnection.h` | MariaDB-/MySQL-Zugriff und transaktionaler Messintervall-Upload. |
 | `database/schema.sql` | Zeitreihen- und Idempotenzschema. |
@@ -182,12 +201,32 @@ keiten und die fuer ESP32 notwendige Ausschlussliste stehen in
 WLAN-/Ethernet-Shield-Bibliotheken, die transitiv von der MySQL-Bibliothek
 angeboten werden.
 
+### RGB-Statusanzeige
+
+Die eingebaute RGB-LED zeigt den Betriebszustand mit folgender Prioritaet:
+
+1. **Rot dauerhaft:** WLAN getrennt, Verbrauchspuffer nicht initialisiert oder der
+   letzte Datenbankupload ist fehlgeschlagen.
+2. **Gelb blinkend:** Messdaten werden gerade an die Datenbank gesendet.
+3. **Orange dauerhaft:** Die freie NVS-Kapazitaet oder der freie RAM-Heap liegt
+   je nach Puffermodus bei oder unter der konfigurierten Schwelle
+   (`minimumFreeNvsPercent` bzw. `minimumFreeRamPercent`, Vorgabe jeweils 10 %).
+4. **Gruen dauerhaft:** WLAN verbunden und kein hoeher priorisierter Zustand
+   aktiv.
+
+Ein fehlgeschlagener Upload bleibt rot angezeigt, bis ein spaeterer Upload
+erfolgreich war. Waehrend des Uploads laeuft die LED-Anzeige in einer eigenen
+Aufgabe, damit das gelbe Blinksignal auch waehrend der synchronen
+Datenbankkommunikation erhalten bleibt.
+
 ## Ablauf und Ausfallsicherheit
 
 1. Die GPIO-Interrupts messen beide Flanken. Nur Pulse mit passender Polaritaet,
    ausreichender aktiver Dauer und ausreichendem Mindestabstand werden gezaehlt.
 2. `main.cpp` vergleicht die Zaehlerstaende mit den zuletzt gepufferten
-   Staenden und schreibt nur neue Impulse als Verbrauchsdifferenz ins NVS.
+   Staenden und addiert nur neue Impulse als Verbrauchsdifferenz zum
+   konfigurierten Puffer. `Config::Runtime::useNvsConsumptionBuffer` waehlt
+   zwischen RAM (Standard) und NVS.
 3. `NtpClock` setzt die Systemzeit. Die Zeitzone
    `CET-1CEST,M3.5.0/2,M10.5.0/3` schaltet automatisch zwischen Normal- und
    Sommerzeit um.
@@ -199,12 +238,15 @@ angeboten werden.
 5. Ein Batch wird mit ESP32-Geraete-ID und persistenter Sequenznummer
    transaktional eingefuegt. Der Server kann denselben Batch bei einem
    Verbindungsabbruch sicher wiedererkennen und doppelte Messreihen vermeiden.
-6. Erst nach erfolgreichem Commit wird der Flash-Puffer geleert und die
-   Sequenz erhoeht. Bei Fehlern bleibt der Puffer bestehen und ein spaeterer
-   Versuch kann den Batch erneut senden.
-7. Die NVS-Ueberwachung laeuft unabhaengig von WLAN und kann bei Erreichen der
-   konfigurierten Freispeicherschwelle einen zusaetzlichen Upload anfordern.
-   Der Upload benoetigt weiterhin WLAN und eine erreichbare Datenbank.
+6. Erst nach erfolgreichem Commit wird der Puffer geleert und die Sequenz
+   erhoeht. Bei Fehlern bleibt der Puffer bis zum naechsten Versuch bestehen.
+   Im RAM-Modus gehen noch nicht bestaetigte Werte bei Stromverlust oder Reset
+   verloren; im NVS-Modus bleiben sie erhalten.
+7. Die Speicherueberwachung laeuft unabhaengig von WLAN. Im NVS-Modus kann
+   knapper NVS-Freiplatz einen zusaetzlichen Upload ausloesen. Im RAM-Modus
+   meldet sie knappen Heap und schaltet die Status-LED auf Orange; ein Upload
+   wird dadurch nicht ausgeloest, da der RAM-Puffer fest dimensioniert ist.
+   Jeder Upload benoetigt WLAN und eine erreichbare Datenbank.
 
 Jede Zeile in `energy_measurements` enthaelt Geraete-ID, Zaehler-ID,
 Uploadsequenz, `measured_at` und `consumption_kwh`. `measured_at` ist der
@@ -237,8 +279,10 @@ ORDER BY device_id, measured_at, sequence;
 
 Der NVS-Monitor misst freie Eintraege der NVS-Partition, nicht die gesamte
 physische Flash-Kapazitaet und nicht den fuer Firmware reservierten Bereich.
-Der Puffer ist ein fest dimensionierter Datensatz; die Zahl gespeicherter
-Schluessel waechst nicht mit den Verbrauchswerten.
+Im NVS-Modus ist der Verbrauchspuffer ein fest dimensionierter Datensatz; die
+Zahl gespeicherter Schluessel waechst nicht mit den Verbrauchswerten. Im
+RAM-Modus werden normale Impulse nicht einzeln ins NVS geschrieben; Sequenzen
+und seltene Ueberlauf-Checkpoints bleiben dennoch im NVS gespeichert.
 
 ### Ueberlauf- und Wertebereichsschutz
 
@@ -274,7 +318,9 @@ Die zentralen Werte liegen nach dem Kopieren in `include/Config.h`:
 - `Config::Runtime::uploadEveryMinutes`: Uploadabstand. Er muss ein positiver Teiler von 60
   sein. `15` ergibt lokale Zeitpunkte wie 15:00, 15:15, 15:30 und 15:45.
 - `Config::Runtime::minimumFreeNvsPercent`: Schwelle fuer den zusaetzlichen Speicher-Upload.
-- `Config::Runtime::flashMonitorIntervalMs`: Abstand zwischen NVS-Statistikabfragen.
+- `Config::Runtime::nvsMonitorIntervalMs`: Abstand zwischen NVS-Statistikabfragen.
+- `Config::Runtime::minimumFreeRamPercent`: Mindestanteil freien Heaps, bevor die Status-LED auf Speicherwarnung wechselt.
+- `Config::Runtime::ramMonitorIntervalMs`: Abstand zwischen RAM-Heap-Messungen.
 - `Config::Runtime::uploadRetryMs`: Wartezeit fuer fehlgeschlagene Uploads.
 - `Config::Runtime::minimumLogLevel`: Logging-Stufe (`LOG_ERROR`, `LOG_WARNING`,
   `LOG_INFO`, `LOG_DEBUG` oder `LOG_DEBUG_PLUS`).
@@ -316,18 +362,18 @@ enthaelt zusaetzliche WLAN-Details, RSSI-Werte, gepufferte Zaehlerwerte und
 Diagnosezaehler verworfener Pulse. Die Interrupt-Service-Routine schreibt
 absichtlich nicht direkt auf die serielle Schnittstelle: sie zaehlt verworfene
 Pulse und gibt die Diagnose spaeter aus dem Hauptprogramm aus. Dadurch wird die
-Zeit im Interrupt kurz gehalten. Serielle Meldungen erscheinen mit
-Zeitstempeln seit Systemstart; vor NTP sind sie keine Kalenderzeit. Setze die
-Mindeststufe auf `LOG_INFO` fuer den Normalbetrieb oder `LOG_DEBUG_PLUS` zur
-Fehlersuche.
+Zeit im Interrupt kurz gehalten. Serielle Meldungen erscheinen nach NTP mit
+lokalem Datum und Uhrzeit. Davor kennzeichnet der Zeitstempel, dass die Uhr noch
+nicht synchronisiert ist. Setze die Mindeststufe auf `LOG_INFO` fuer den
+Normalbetrieb oder `LOG_DEBUG_PLUS` zur Fehlersuche.
 
 | Bereich | `INFO` / `WARNING` / `ERROR` | `DEBUG` | `DEBUG+` |
 | --- | --- | --- | --- |
 | WLAN | Verbindung, IP-Adresse, Trennung und Reconnect-Warnungen | Statuswechsel und Reconnect-Ablauf | Stationsereignisse und periodische Signalstaerke |
 | Datenbank | Verbindungsfehler, fehlgeschlagene Transaktionen und gespeicherte Messintervalle | Schreibaktionen und Sequenzablauf | erfolgreiche SQL- und Transaktionsschritte |
 | NTP und Zeitplan | erste Zeitsynchronisierung und erreichter Messzeitpunkt | SNTP-Start und Initialisierung des Zeitplans | Zeitfensterwechsel und detaillierte Scheduler-Entscheidungen |
-| Zaehler/Interrupt | ungueltige Zustands-/Flashfehler | konfigurierte Zaehler sowie neu erkannte und gespeicherte Pulse | ISR-Diagnose fuer verworfene Pulse; Ausgabe erfolgt verzoegert im Hauptprogramm |
-| NVS-Puffer | Flash-/NVS-Fehler und kritische Speicherschwelle | Pufferstart, Batch- und Speicherentscheidungen | gespeicherte Details und NVS-Schreibvorgaenge |
+| Zaehler/Interrupt | ungueltige Zustands-/Pufferfehler | konfigurierte Zaehler sowie neu erkannte und gepufferte Pulse | ISR-Diagnose fuer verworfene Pulse; Ausgabe erfolgt verzoegert im Hauptprogramm |
+| RAM-/NVS-Speicher | Speicherfehler und kritische Reserve | Pufferstart, Batch- und Speicherentscheidungen | Heap-/NVS-Details und Checkpoint-Schreibvorgaenge |
 
 | Symptom | Pruefen |
 | --- | --- |
@@ -346,10 +392,11 @@ Fehlersuche.
   exponiere den Datenbankport nicht im oeffentlichen Internet.
 - Zugangsdaten gehoeren in die ignorierten lokalen Konfigurationsdateien und
   nicht in Commits, Screenshots oder Logs.
-- Der Puffer wird bei jedem neu erfassten Verbrauchsschritt dauerhaft
-  aktualisiert. Das erhoeht Robustheit gegen Neustarts, beansprucht aber
-  Flash-Schreibzyklen. Bei sehr hoher Impulsrate muss die Persistenzstrategie
-  gegen Datenverlust-Risiko und Flash-Lebensdauer abgewogen werden.
+- Im NVS-Modus wird der Puffer bei jedem neu erfassten Verbrauchsschritt
+  dauerhaft aktualisiert. Das erhoeht die Robustheit gegen Neustarts, beansprucht
+  aber Flash-Schreibzyklen. Im RAM-Modus werden normale Impulse nicht einzeln
+  gespeichert; Sequenzstatus und seltene Ueberlauf-Checkpoints bleiben im NVS.
+  Noch nicht hochgeladene RAM-Werte gehen bei Neustart oder Stromausfall verloren.
 - Bei Stromausfall waehrend eines einzelnen NVS-Schreibvorgangs haengt die
   Wiederherstellbarkeit von der NVS-/Flash-Implementierung ab. Die
   Batch-Sequenzierung schuetzt vor doppelter DB-Verbuchung, ersetzt aber keine

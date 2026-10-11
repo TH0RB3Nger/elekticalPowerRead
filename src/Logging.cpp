@@ -1,29 +1,38 @@
 #include "Logging.h"
 
+#include <time.h>
+
 #include "Config.h"
 
 namespace {
 /// Die Mindeststufe wird zentral in Config.h festgelegt.
 constexpr LogLevel currentLogLevel = Config::Runtime::minimumLogLevel;
+
+/// Unterhalb dieses Unix-Zeitpunkts gilt die Uhr als noch nicht synchronisiert.
+constexpr time_t plausibleEpoch = 1700000000;
 }
 
 /**
- * @brief Formatiert Zeit seit Systemstart und Stufe und gibt die Meldung aus.
+ * @brief Formatiert lokale Zeit und Stufe und gibt die Meldung aus.
  */
 void logMessage(LogLevel level, const String& message) {
     if (level > currentLogLevel) {
         return;
     }
 
-    const unsigned long uptime = millis();
-    char timestamp[20];
-    snprintf(
-        timestamp,
-        sizeof(timestamp),
-        "[%lu.%03lus]",
-        uptime / 1000UL,
-        uptime % 1000UL
-    );
+    char timestamp[40];
+    const time_t currentTime = time(nullptr);
+    struct tm localTime;
+    const bool hasLocalTime = currentTime >= plausibleEpoch
+        && localtime_r(&currentTime, &localTime) != nullptr
+        && strftime(
+            timestamp,
+            sizeof(timestamp),
+            "[%d.%m.%Y %H:%M:%S %Z]",
+            &localTime) > 0;
+    if (!hasLocalTime) {
+        snprintf(timestamp, sizeof(timestamp), "[Uhrzeit nicht synchronisiert]");
+    }
 
     const char* levelName = "INFO";
     switch (level) {

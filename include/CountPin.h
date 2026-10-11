@@ -57,7 +57,7 @@ public:
     uint64_t getCount() const;
 
     /**
-     * @brief Entfernt einen bereits dauerhaft gepufferten Teilstand atomar.
+    * @brief Entfernt einen bereits im Verbrauchspuffer uebernommenen Teilstand atomar.
      * @return false, wenn der Zaehler seit dem Snapshot gesaettigt wurde.
      */
     bool subtractCount(uint64_t count);
@@ -68,6 +68,6 @@ public:
     /// Liest ISR-Diagnosezaehler atomar; gibt keine Logs aus der Interrupt-Routine aus.
     RejectedPulseCounts getRejectedPulseCounts() const;
 
-    /// Setzt den Impulsstand interruptgeschuetzt auf null.
+    /// Setzt den lokalen Impulsstand interruptgeschuetzt auf null.
     void reset();
 };

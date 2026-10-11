@@ -6,13 +6,15 @@
 #else
 #error "Config.h fehlt. Kopiere include/Config.h.example nach include/Config.h und trage deine Werte ein."
 #endif
+#include "ConsumptionBuffer.h"
 #include "ConsumptionSync.h"
 #include "CountPin.h"
 #include "DatabaseConnection.h"
 #include "Logging.h"
 #include "NtpClock.h"
 #include "NvsStorageMonitor.h"
-#include "PersistentConsumptionBuffer.h"
+#include "RamStorageMonitor.h"
+#include "StatusLed.h"
 #include "UploadScheduler.h"
 #include "WirelessConnection.h"
 
@@ -40,10 +42,10 @@ WirelessConnection wifi(
 /// SQL-Zugriff auf die MariaDB/MySQL-Datenbank.
 DatabaseConnection database;
 
-/// Dauerhafter Speicher fuer Verbrauchsdifferenzen bis zur Bestaetigung.
-PersistentConsumptionBuffer consumptionBuffer;
+/// Modusneutraler Speicher fuer Verbrauchsdifferenzen bis zur Bestaetigung.
+ConsumptionBuffer consumptionBuffer;
 
-/// Koordiniert Datenbankabfrage, Batch-Upload und Flash-Leerung.
+/// Koordiniert Datenbankabfrage, Batch-Upload und Pufferbestaetigung.
 ConsumptionSync consumptionSync(
     database,
     consumptionBuffer,
@@ -53,14 +55,23 @@ ConsumptionSync consumptionSync(
 /// NTP-Uhr und Mitteleuropa-Sommerzeit.
 NtpClock clockSync;
 
-/// Fester lokaler Uploadtakt, standardmaessig alle 15 Minuten.
+/// Fester lokaler Uploadtakt gemaess Konfiguration.
 UploadScheduler uploadScheduler(Config::Runtime::uploadEveryMinutes);
 
-/// Notfall-Uploadueberwachung fuer freie NVS-Eintraege.
-NvsStorageMonitor storageMonitor(
+/// Ueberwacht NVS-Freiplatz im NVS-Puffermodus.
+NvsStorageMonitor nvsStorageMonitor(
     Config::Runtime::minimumFreeNvsPercent,
-    Config::Runtime::flashMonitorIntervalMs
+    Config::Runtime::nvsMonitorIntervalMs
 );
+
+/// Ueberwacht freien Heap im RAM-Puffermodus.
+RamStorageMonitor ramStorageMonitor(
+    Config::Runtime::minimumFreeRamPercent,
+    Config::Runtime::ramMonitorIntervalMs
+);
+
+/// Zustandsanzeige ueber die RGB-LED des Arduino Nano ESP32.
+StatusLed statusLed;
 
 /// Vier entprellte Impulszaehler an den konfigurierten GPIO-Pins.
 CountPin counter1(
@@ -92,8 +103,27 @@ CountPin counter4(
     Config::Runtime::minimumPulseIntervalMs
 );
 
-/// Verhindert, dass ein fehlgeschlagener NVS-Start als gueltiger Puffer gilt.
-bool consumptionBufferReady = false;
+/// Verhindert, dass ein fehlgeschlagener Pufferstart als gueltig gilt.
+bool consumptionBufferInitialized = false;
+
+/// Haelt den Fehlerzustand bis zu einem erfolgreichen Upload sichtbar.
+bool uploadFailed = false;
+
+/**
+ * @brief Berechnet den LED-Zustand in der festgelegten Prioritaetsreihenfolge.
+ */
+void updateStatusLed() {
+    if (!consumptionBufferInitialized || !wifi.isConnected() || uploadFailed) {
+        statusLed.setStatus(StatusLed::Status::Error);
+    } else if ((Config::Runtime::useNvsConsumptionBuffer
+            && nvsStorageMonitor.isCritical())
+        || (!Config::Runtime::useNvsConsumptionBuffer
+            && ramStorageMonitor.isCritical())) {
+        statusLed.setStatus(StatusLed::Status::StorageCritical);
+    } else {
+        statusLed.setStatus(StatusLed::Status::WifiConnected);
+    }
+}
 
 /**
  * @brief Meldet ISR-Verwerfungen aus dem Haupttask, niemals direkt aus der ISR.
@@ -137,33 +167,33 @@ void logRejectedPulseDiagnostics(
 }
 
 /**
- * @brief Addiert die seit dem letzten Speichern eingetroffenen Impulse im NVS.
+ * @brief Addiert neue Impulse zum konfigurierten RAM- oder NVS-Puffer.
  * @param counter Impulszaehler des GPIO-Pins.
  * @param counterId Feste Datenbank-ID des Zaehlerkanals (4 bis 7).
- * @param savedCount Letzter erfolgreich im Flash uebernommener Impulsstand.
+ * @param bufferedCount Letzter bereits in den Verbrauchspuffer uebernommener Stand.
  */
 void bufferNewPulses(
     CountPin& counter,
     uint8_t counterId,
-    uint64_t& savedCount
+    uint64_t& bufferedCount
 ) {
-    if (!consumptionBufferReady) {
+    if (!consumptionBufferInitialized) {
         return;
     }
 
     constexpr uint64_t rolloverThreshold = UINT64_MAX - 1000000ULL;
     const uint64_t currentCount = counter.getCount();
-    if (currentCount < savedCount) {
+    if (currentCount < bufferedCount) {
         logError(
             "Impulszaehler fuer ID " + String(counterId)
             + " wurde zurueckgesetzt; passe den gespeicherten Stand an"
         );
-        savedCount = currentCount;
+        bufferedCount = currentCount;
         return;
     }
 
-    if (currentCount != savedCount) {
-        const uint64_t newPulses = currentCount - savedCount;
+    if (currentCount != bufferedCount) {
+        const uint64_t newPulses = currentCount - bufferedCount;
         const double addedConsumption =
             newPulses / Config::Runtime::resolutionPulsesPerKWh;
         if (!isfinite(addedConsumption)) {
@@ -182,14 +212,14 @@ void bufferNewPulses(
         if (!consumptionBuffer.addConsumption(counterId, addedConsumption)) {
             return;
         }
-        savedCount = currentCount;
+        bufferedCount = currentCount;
         logDebug(
             "Verbrauch fuer Zaehler-ID " + String(counterId)
-            + " dauerhaft im Flash gespeichert"
+            + " im konfigurierten Puffer uebernommen"
         );
     }
 
-    if (currentCount < rolloverThreshold || savedCount != currentCount) {
+    if (currentCount < rolloverThreshold || bufferedCount != currentCount) {
         return;
     }
     if (!consumptionBuffer.requestImmediateUpload()) {
@@ -203,7 +233,7 @@ void bufferNewPulses(
         return;
     }
 
-    savedCount = 0;
+    bufferedCount = 0;
     logWarning(
         "Impulszaehler fuer ID " + String(counterId)
         + " nahe am Zahlenlimit; gepufferter Stand wird sofort uebertragen"
@@ -230,8 +260,9 @@ void serviceConnectedNetwork(unsigned long now) {
     if (!immediateUpload) {
         immediateRequestAttempted = false;
     }
-    const bool lowStorageUpload =
-        storageMonitor.isCritical() && consumptionBuffer.hasPending();
+    const bool lowStorageUpload = Config::Runtime::useNvsConsumptionBuffer
+        && nvsStorageMonitor.isCritical()
+        && consumptionBuffer.hasPending();
 
     if (!scheduledUpload && !lowStorageUpload && !immediateUpload) {
         return;
@@ -250,7 +281,17 @@ void serviceConnectedNetwork(unsigned long now) {
     }
 
     consumptionSync.markUploadAttempt(now);
-    if (consumptionSync.uploadPending()) {
+    uploadFailed = false;
+    if (consumptionBufferInitialized) {
+        statusLed.setStatus(StatusLed::Status::Uploading);
+    } else {
+        updateStatusLed();
+    }
+
+    const bool uploadSucceeded = consumptionSync.uploadPending();
+    uploadFailed = !uploadSucceeded;
+    updateStatusLed();
+    if (uploadSucceeded) {
         immediateRequestAttempted = false;
         uploadScheduler.markCompleted();
     }
@@ -258,16 +299,23 @@ void serviceConnectedNetwork(unsigned long now) {
 }
 
 /**
- * @brief Initialisiert serielle Ausgabe, NVS-Puffer und WLAN.
+ * @brief Initialisiert serielle Ausgabe, Verbrauchspuffer und WLAN.
  */
 void setup() {
     Serial.begin(Config::Runtime::serialBaudRate);
+    statusLed.begin();
     logInfo("System gestartet");
     logInfo(
         "Konfiguration: Aufloesung "
         + String(Config::Runtime::resolutionPulsesPerKWh, 3)
         + " Impulse/kWh, Upload alle "
         + String(Config::Runtime::uploadEveryMinutes) + " min"
+    );
+    logInfo(
+        String("Verbrauchspuffer: ")
+        + (Config::Runtime::useNvsConsumptionBuffer
+            ? "NVS (Impulse dauerhaft gespeichert)"
+            : "RAM (Puffer geht bei Stromverlust verloren)")
     );
     logDebug(
         "GPIO-Zuordnung: Zaehler 1..4 = "
@@ -284,20 +332,29 @@ void setup() {
         + " ms, Mindestabstand "
         + String(Config::Runtime::minimumPulseIntervalMs) + " ms"
     );
-    logDebug(
-        "NVS-Ueberwachung: Schwelle "
-        + String(Config::Runtime::minimumFreeNvsPercent)
-        + " %, Intervall "
-        + String(Config::Runtime::flashMonitorIntervalMs) + " ms"
-    );
+    if (Config::Runtime::useNvsConsumptionBuffer) {
+        logDebug(
+            "NVS-Ueberwachung: Schwelle "
+            + String(Config::Runtime::minimumFreeNvsPercent)
+            + " %, Intervall "
+            + String(Config::Runtime::nvsMonitorIntervalMs) + " ms"
+        );
+    } else {
+        logDebug(
+            "RAM-Heap-Ueberwachung: Mindestreserve "
+            + String(Config::Runtime::minimumFreeRamPercent)
+            + " %, Intervall "
+            + String(Config::Runtime::ramMonitorIntervalMs) + " ms"
+        );
+    }
     logDebug(
         "Datenbank-Upload-Wiederholungsintervall: "
         + String(Config::Runtime::uploadRetryMs) + " ms"
     );
 
-    consumptionBufferReady = consumptionBuffer.begin();
-    if (!consumptionBufferReady) {
-        logError("Dauerhafter Verbrauchspuffer konnte nicht initialisiert werden");
+    consumptionBufferInitialized = consumptionBuffer.begin();
+    if (!consumptionBufferInitialized) {
+        logError("Verbrauchspuffer konnte nicht initialisiert werden");
     }
 
     if (wifi.connect()) {
@@ -306,6 +363,7 @@ void setup() {
     } else {
         logError("WLAN-Verbindung fehlgeschlagen; automatische Wiederverbindung aktiv");
     }
+    updateStatusLed();
 }
 
 /**
@@ -321,28 +379,34 @@ void loop() {
     wifi.maintainConnection();
     wifi.printStatus();
 
-    static uint64_t savedCount1 = 0;
-    static uint64_t savedCount2 = 0;
-    static uint64_t savedCount3 = 0;
-    static uint64_t savedCount4 = 0;
+    static uint64_t bufferedCount1 = 0;
+    static uint64_t bufferedCount2 = 0;
+    static uint64_t bufferedCount3 = 0;
+    static uint64_t bufferedCount4 = 0;
 
-    bufferNewPulses(counter1, 4, savedCount1);
-    bufferNewPulses(counter2, 5, savedCount2);
-    bufferNewPulses(counter3, 6, savedCount3);
-    bufferNewPulses(counter4, 7, savedCount4);
+    bufferNewPulses(counter1, 4, bufferedCount1);
+    bufferNewPulses(counter2, 5, bufferedCount2);
+    bufferNewPulses(counter3, 6, bufferedCount3);
+    bufferNewPulses(counter4, 7, bufferedCount4);
 
     logRejectedPulseDiagnostics(counter1, 4, rejected1);
     logRejectedPulseDiagnostics(counter2, 5, rejected2);
     logRejectedPulseDiagnostics(counter3, 6, rejected3);
     logRejectedPulseDiagnostics(counter4, 7, rejected4);
 
-    if (consumptionBufferReady) {
-        storageMonitor.update(consumptionBuffer, millis());
+    if (consumptionBufferInitialized) {
+        const unsigned long now = millis();
+        if (Config::Runtime::useNvsConsumptionBuffer) {
+            nvsStorageMonitor.update(now);
+        } else {
+            ramStorageMonitor.update(now);
+        }
     }
 
     if (wifi.isConnected()) {
         serviceConnectedNetwork(millis());
     }
 
+    updateStatusLed();
     delay(Config::Runtime::mainLoopDelayMs);
 }

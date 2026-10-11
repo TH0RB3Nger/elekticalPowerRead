@@ -2,16 +2,14 @@
 
 #include <Arduino.h>
 
-#include "PersistentConsumptionBuffer.h"
-
 /**
- * @brief Ueberwacht NVS-Eintraege und meldet eine kritische Restkapazitaet.
+ * @brief Ueberwacht die freie Kapazitaet der NVS-Partition.
  */
 class NvsStorageMonitor {
 public:
     /**
-     * @brief Erstellt eine Ueberwachung mit Prozentgrenze und Meldeintervall.
-     * @param minimumFreePercent Schwelle, bei der sofortiger Upload noetig ist.
+    * @brief Erstellt eine Ueberwachung mit NVS-Schwelle und Pruefintervall.
+    * @param minimumFreePercent Schwelle fuer eine kritische NVS-Restkapazitaet.
      * @param checkIntervalMs Abstand zwischen Statistikabfragen in Millisekunden.
      */
     NvsStorageMonitor(
@@ -20,12 +18,11 @@ public:
     );
 
     /**
-     * @brief Aktualisiert periodisch Statistik und Schwellenstatus.
-     * @param buffer Flash-Puffer, dessen NVS-Partition ausgewertet wird.
+     * @brief Aktualisiert periodisch NVS-Statistik und Schwellenstatus.
      * @param now Aktueller millis()-Zeitwert.
      * @return true, wenn NVS-Statistik verfuegbar ist.
      */
-    bool update(const PersistentConsumptionBuffer& buffer, unsigned long now);
+    bool update(unsigned long now);
 
     /// Meldet, ob die letzte Statistik die konfigurierte Schwelle erreicht hat.
     bool isCritical() const;
@@ -43,6 +40,6 @@ private:
     /// Ergebnis der letzten NVS-Statistikabfrage.
     bool _statsAvailable = false;
 
-    /// Gibt an, ob die letzte Messung die Uploadschwelle erreicht hat.
+    /// Gibt an, ob die letzte Messung die NVS-Warnschwelle erreicht hat.
     bool _critical = false;
 };

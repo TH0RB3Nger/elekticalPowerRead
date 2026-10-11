@@ -1,5 +1,9 @@
 #include "DatabaseConnection.h"
 
+#ifdef ESP32
+#undef ESP32
+#endif
+#define ESP32 1
 #include <MySQL_Generic.h>
 #include <WiFi.h>
 #include <cctype>
@@ -90,20 +94,20 @@ bool ensureConnected() {
     return true;
 }
 
-bool executeInTransaction(const char* statement) {
+bool executeInTransaction(const char* statement, const char* step) {
     MySQL_Query query(&mysqlConnection);
     if (query.execute(statement)) {
         logDebugPlus("SQL-Schritt innerhalb der Datenbanktransaktion erfolgreich");
         return true;
     }
-    logError("Datenbank-Transaktion fehlgeschlagen");
+    logError(String("Datenbank-Schritt fehlgeschlagen: ") + step);
     return false;
 }
 
 void rollbackAndClose() {
     logWarning("Datenbanktransaktion wird zurueckgerollt");
     if (mysqlConnection.connected()) {
-        executeInTransaction("ROLLBACK");
+        executeInTransaction("ROLLBACK", "ROLLBACK");
     }
     mysqlConnection.close();
 }
@@ -191,7 +195,7 @@ bool DatabaseConnection::addConsumptionBatch(
     }
 
     if (!ensureConnected()
-        || !executeInTransaction("START TRANSACTION")) {
+        || !executeInTransaction("START TRANSACTION", "START TRANSACTION")) {
         mysqlConnection.close();
         return false;
     }
@@ -205,7 +209,7 @@ bool DatabaseConnection::addConsumptionBatch(
         "(device_id, last_sequence) VALUES ('%s', 0)",
         quotedDeviceId
     );
-    if (!executeInTransaction(statement)) {
+    if (!executeInTransaction(statement, "INSERT energy_sync_state")) {
         rollbackAndClose();
         return false;
     }
@@ -236,7 +240,7 @@ bool DatabaseConnection::addConsumptionBatch(
     }
 
     if (sequence <= lastSequence) {
-        if (!executeInTransaction("COMMIT")) {
+        if (!executeInTransaction("COMMIT", "COMMIT Wiederholung")) {
             rollbackAndClose();
             return false;
         }
@@ -250,7 +254,9 @@ bool DatabaseConnection::addConsumptionBatch(
         return false;
     }
 
-    if (!executeInTransaction("SET @energy_measurement_time = UTC_TIMESTAMP(6)")) {
+    if (!executeInTransaction(
+            "SET @energy_measurement_time = UTC_TIMESTAMP(6)",
+            "Zeitstempel setzen")) {
         rollbackAndClose();
         return false;
     }
@@ -267,7 +273,7 @@ bool DatabaseConnection::addConsumptionBatch(
             static_cast<unsigned long long>(sequence),
             formattedAmounts[index]
         );
-        if (!executeInTransaction(statement)) {
+        if (!executeInTransaction(statement, "INSERT energy_measurements")) {
             rollbackAndClose();
             return false;
         }
@@ -281,8 +287,8 @@ bool DatabaseConnection::addConsumptionBatch(
         static_cast<unsigned long long>(sequence),
         quotedDeviceId
     );
-    if (!executeInTransaction(statement)
-        || !executeInTransaction("COMMIT")) {
+    if (!executeInTransaction(statement, "UPDATE energy_sync_state")
+        || !executeInTransaction("COMMIT", "COMMIT")) {
         rollbackAndClose();
         return false;
     }

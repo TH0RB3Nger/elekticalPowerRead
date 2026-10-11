@@ -1,9 +1,11 @@
 # MariaDB/MySQL setup
 
-1. Run `schema.sql` on the MariaDB/MySQL server to create the time-series table
-   and idempotent upload state. Existing cumulative values in
-   `energy_consumption` are left untouched; they cannot be accurately converted
-   into interval readings without historical timestamps.
+1. Run the complete `schema.sql` on the MariaDB/MySQL server to create the
+   database, time-series table, and idempotent upload state. If executing only
+   the `CREATE TABLE` statements in phpMyAdmin, first run the `CREATE DATABASE`
+   statement; the tables are explicitly created in `energy_monitor`. Existing
+   cumulative values in `energy_consumption` are left untouched; they cannot be
+   accurately converted into interval readings without historical timestamps.
 2. Copy `include/Config.h.example` to `include/Config.h` and set the database
    values in `Config::Database`. The real configuration file, which also
    contains Wi-Fi and runtime settings, is excluded from Git.
@@ -19,18 +21,23 @@ transaction. Each row stores the device, counter, upload sequence, measured
 kWh, and the database server's shared UTC timestamp for that batch.
 
 Valid counter IDs are the fixed channel IDs `4` through `7`; GPIO assignments
-are independently configurable. The main loop records only new pulses into an
-ESP32 NVS flash buffer. Each database row records kWh measured since the
-previous successful upload for that device and counter. The configured
+are independently configurable. The main loop records only new pulses into a
+configurable RAM or ESP32 NVS buffer (RAM by default). In RAM mode, unuploaded
+values are lost on power loss or reset. Each database row records kWh measured
+since the previous successful upload for that device and counter. The configured
 resolution is the number of pulses per kWh, so 1000 pulses/kWh add 0.001 kWh
 (1 Wh) per valid pulse. NTP sets the scheduler clock to Europe/Berlin time with
-automatic summer-time changes; uploads occur on quarter-hour boundaries
-(15:00, 15:15, 15:30, ...), including zero-kWh rows when a counter did not
-consume energy during that interval. The database timestamp is generated in
-UTC by the server and shared by all four rows in a batch. If free capacity in
-the NVS partition falls to 10% or lower, a pending batch is uploaded
-immediately instead of waiting for the next boundary. The interval and
-free-space threshold are constants in `Config::Runtime` in `include/Config.h`.
+automatic summer-time changes; with the default 15-minute interval, uploads
+occur on quarter-hour boundaries (15:00, 15:15, 15:30, ...), including zero-kWh
+rows when a counter did not consume energy during that interval. The database timestamp is generated in
+UTC by the server and shared by all four rows in a batch. In NVS mode, if free
+capacity reaches the configured threshold (10% by default), a pending batch is
+uploaded immediately instead of waiting for the next boundary. This NVS monitor is
+disabled in RAM mode. The RAM monitor reports free, total, and minimum heap;
+falling below its configured reserve threshold raises a warning but does not
+trigger an upload because uploading does not shrink the fixed-size RAM buffer.
+Monitor intervals and thresholds are configured in `Config::Runtime` in
+`include/Config.h`.
 
 The buffer is cleared only after the transaction succeeds. A per-device
 sequence stored in `energy_sync_state` makes retries safe if the database
@@ -63,11 +70,15 @@ wrap. The corresponding NVS upload request is persistent and bypasses the
 regular quarter-hour schedule. If the database is unavailable, the checkpoint
 remains in NVS and the firmware retries when the connection is available.
 
-The monitor reports available NVS key-value entries, not the total physical
-flash chip or the firmware partition. The pending buffer is a fixed-size NVS
-record and does not grow as consumption accumulates.
+The NVS monitor reports available NVS key-value entries, not the total physical
+flash chip or the firmware partition. In NVS mode, the pending buffer is a
+fixed-size record and does not grow as consumption accumulates. In RAM mode,
+normal pulse updates do not write pending values to NVS; sequence status and
+rare overflow checkpoints are still persisted.
 
-The flash buffer is written when new pulses are counted. This preserves pending
-consumption across a reboot, but frequent pulse writes use flash endurance.
-Adjust the persistence strategy if the meter produces a very high pulse rate.
-NTP requires internet access to one of the configured time servers.
+In NVS mode, the buffer is written when new pulses are counted. This preserves
+pending consumption across a reboot, but frequent pulse writes use flash
+endurance. Adjust the persistence strategy if the meter produces a very high
+pulse rate.
+NTP requires network access to the configured time server; Internet access is
+needed only when using a public time server.

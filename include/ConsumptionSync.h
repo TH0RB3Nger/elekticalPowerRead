@@ -2,8 +2,8 @@
 
 #include <Arduino.h>
 
+#include "ConsumptionBuffer.h"
 #include "DatabaseConnection.h"
-#include "PersistentConsumptionBuffer.h"
 
 /**
  * @brief Koordiniert Messintervall-Upload und commitabhaengige Pufferloeschung.
@@ -11,14 +11,14 @@
 class ConsumptionSync {
 public:
     /**
-     * @brief Verknuepft Datenbank und dauerhaften Verbrauchspuffer.
+        * @brief Verknuepft Datenbank und konfigurierten Verbrauchspuffer.
      * @param database Datenbankzugriff fuer Lesen und Schreiben.
-     * @param buffer Persistenter Flash-Puffer der noch nicht bestaetigten Werte.
+        * @param buffer RAM-/NVS-Puffer der noch nicht bestaetigten Werte.
      * @param uploadRetryMs Abstand zwischen Upload-Wiederholungen.
      */
     ConsumptionSync(
         DatabaseConnection& database,
-        PersistentConsumptionBuffer& buffer,
+        ConsumptionBuffer& buffer,
         unsigned long uploadRetryMs
     );
 
@@ -41,9 +41,9 @@ public:
     void markUploadAttempt(unsigned long now);
 
 private:
-    /// Datenbankzugriff und Flash-Puffer bleiben im Hauptprogramm im Besitz.
+    /// Datenbankzugriff und Verbrauchspuffer bleiben im Hauptprogramm im Besitz.
     DatabaseConnection& _database;
-    PersistentConsumptionBuffer& _buffer;
+    ConsumptionBuffer& _buffer;
 
     /// Konfigurierbarer Zeitabstand fuer Upload-Wiederholungen.
     unsigned long _uploadRetryMs;

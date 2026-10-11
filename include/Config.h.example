@@ -43,6 +43,9 @@ static_assert(
 
 /// Impulserfassung, Pufferschutz und Upload-Zeitplan.
 namespace Runtime {
+/// true: Verbrauchspuffer nach jedem Impuls im NVS sichern; false: nur im RAM puffern.
+constexpr bool useNvsConsumptionBuffer = false;
+
 /// Zaehleraufloesung in Impulsen pro Kilowattstunde.
 /// Beispiel: 1000 Impulse/kWh entsprechen 0,001 kWh je Impuls.
 constexpr double resolutionPulsesPerKWh = 1000.0;
@@ -64,14 +67,20 @@ static_assert(
 /// Uploadtakt in Minuten; muss ein positiver Teiler von 60 sein.
 constexpr uint8_t uploadEveryMinutes = 15;
 
-/// Bei diesem freien NVS-Anteil oder weniger wird sofort synchronisiert.
+/// Im NVS-Modus loest dieser oder ein kleinerer freier Anteil einen Upload aus.
 constexpr uint8_t minimumFreeNvsPercent = 10;
+
+/// Bei diesem freien Heap-Anteil oder weniger wird RAM-Mangel gemeldet.
+constexpr uint8_t minimumFreeRamPercent = 10;
 
 /// Wartezeit zwischen fehlgeschlagenen Datenbank-Uploadversuchen.
 constexpr unsigned long uploadRetryMs = 30000UL;
 
-/// Wartezeit zwischen Flash-Kapazitaetsabfragen.
-constexpr unsigned long flashMonitorIntervalMs = 60000UL;
+/// Abstand zwischen NVS-Freiplatzpruefungen.
+constexpr unsigned long nvsMonitorIntervalMs = 60000UL;
+
+/// Abstand zwischen RAM-Heap-Pruefungen.
+constexpr unsigned long ramMonitorIntervalMs = 60000UL;
 
 /// Mindeststufe der seriellen Protokollausgabe.
 constexpr LogLevel minimumLogLevel = LOG_DEBUG_PLUS;

@@ -9,7 +9,7 @@ constexpr size_t expectedCounterCount = 4;
 
 ConsumptionSync::ConsumptionSync(
     DatabaseConnection& database,
-    PersistentConsumptionBuffer& buffer,
+    ConsumptionBuffer& buffer,
     unsigned long uploadRetryMs
 )
     : _database(database),
@@ -20,12 +20,12 @@ bool ConsumptionSync::uploadPending() {
     ConsumptionRecord batch[expectedCounterCount];
     size_t batchCount = 0;
     uint64_t sequence = 0;
-    if (!_buffer.getPendingBatch(
+    if (!_buffer.copyPendingBatch(
             batch,
             expectedCounterCount,
             batchCount,
             sequence)) {
-        logError("Ausstehende Flash-Daten konnten nicht gelesen werden");
+        logError("Ausstehende Verbrauchsdaten konnten nicht gelesen werden");
         return false;
     }
     logInfo(
@@ -40,19 +40,19 @@ bool ConsumptionSync::uploadPending() {
     }
 
     if (!_database.addConsumptionBatch(deviceId, sequence, batch, batchCount)) {
-        logWarning("Datenbank-Intervall fehlgeschlagen; Flash-Puffer bleibt erhalten");
+        logWarning("Datenbank-Intervall fehlgeschlagen; Verbrauchspuffer bleibt erhalten");
         return false;
     }
 
-    if (!_buffer.markBatchUploaded(sequence)) {
+    if (!_buffer.confirmBatchUploaded(sequence)) {
         logError(
-            "Flash-Puffer konnte nach erfolgreichem Upload nicht geleert werden; "
+            "Verbrauchspuffer konnte nach erfolgreichem Upload nicht geleert werden; "
             "derselbe Upload wird sicher wiederholt"
         );
         return false;
     }
 
-    logInfo("Bestaetigtes Messintervall gespeichert; Flash-Puffer wurde geleert");
+    logInfo("Bestaetigtes Messintervall gespeichert; Verbrauchspuffer wurde geleert");
     return true;
 }
 
