@@ -172,6 +172,9 @@ Speicherstand und Upload-Ergebnisse entsprechend der eingestellten Logging-
 Stufe. Der freie NVS-Platz oder RAM-Heap wird je nach Puffermodus
 standardmaessig einmal pro Minute geprueft. Ein erfolgreicher Datenbank-Commit
 bestaetigt das Messintervall und entfernt erst dann den zugehoerigen Puffer.
+Nach jedem WLAN-Verbindungsaufbau prueft die Firmware einmal, ob Anmeldung und
+Datenbankauswahl funktionieren; bei Fehlern wird die Verbindung bei spaeteren
+Uploadversuchen erneut geprueft.
 
 ## Fuer Entwickler: Projektstruktur
 

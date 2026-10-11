@@ -109,6 +109,9 @@ bool consumptionBufferInitialized = false;
 /// Haelt den Fehlerzustand bis zu einem erfolgreichen Upload sichtbar.
 bool uploadFailed = false;
 
+/// Erkennt WLAN-Verbindungsaufbauten fuer einen einmaligen DB-Verbindungstest.
+bool wifiWasConnected = false;
+
 /**
  * @brief Berechnet den LED-Zustand in der festgelegten Prioritaetsreihenfolge.
  */
@@ -379,6 +382,19 @@ void loop() {
     wifi.maintainConnection();
     wifi.printStatus();
 
+    const bool wifiConnected = wifi.isConnected();
+    if (wifiConnected && !wifiWasConnected) {
+        if (database.checkConnection()) {
+            logInfo("Datenbankverbindung nach WLAN-Aufbau erfolgreich");
+        } else {
+            logWarning(
+                "WLAN steht, aber die Datenbank ist nicht erreichbar; "
+                "Uploadversuche pruefen die Verbindung erneut"
+            );
+        }
+    }
+    wifiWasConnected = wifiConnected;
+
     static uint64_t bufferedCount1 = 0;
     static uint64_t bufferedCount2 = 0;
     static uint64_t bufferedCount3 = 0;
@@ -403,7 +419,7 @@ void loop() {
         }
     }
 
-    if (wifi.isConnected()) {
+    if (wifiConnected) {
         serviceConnectedNetwork(millis());
     }
 

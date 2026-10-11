@@ -20,6 +20,12 @@ public:
     /// Stellt bei verfuegbarem WLAN eine Verbindung zum Datenbankserver her.
     bool connect();
 
+    /**
+     * @brief Testet Anmeldung und Datenbankauswahl und schliesst die Probeverbindung.
+     * @return true, wenn der Server mit den konfigurierten Daten erreichbar ist.
+     */
+    bool checkConnection();
+
     /// Prueft, ob die zugrunde liegende Datenbankverbindung aktiv ist.
     bool isConnected() const;
 

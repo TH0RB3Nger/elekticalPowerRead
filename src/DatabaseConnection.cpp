@@ -143,6 +143,14 @@ bool DatabaseConnection::connect() {
     return ensureConnected();
 }
 
+/// Prueft die DB-Anmeldung nach einem WLAN-Verbindungsaufbau ohne Socket-Leerlauf.
+bool DatabaseConnection::checkConnection() {
+    logInfo("Pruefe Datenbankverbindung nach WLAN-Aufbau");
+    const bool connected = ensureConnected();
+    mysqlConnection.close();
+    return connected;
+}
+
 /// Meldet, ob der MySQL-Connector aktuell eine offene Verbindung hat.
 /// Meldet, ob der MySQL-Connector aktuell eine offene Verbindung hat.
 bool DatabaseConnection::isConnected() const {
