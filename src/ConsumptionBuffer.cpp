@@ -5,11 +5,15 @@
 #include "Config.h"
 #include "Logging.h"
 
+/**
+ * @brief Aggregiert Messwerte im RAM und schreibt je nach Modus NVS-Checkpoints.
+ */
 namespace {
 constexpr uint8_t firstCounterId = 4;
 constexpr size_t counterCount = 4;
 }
 
+/// Initialisiert den NVS-Status und laedt ausstehende Werte, falls vorhanden.
 bool ConsumptionBuffer::begin() {
     if (!_nvsStore.begin()) {
         return false;
@@ -33,6 +37,7 @@ bool ConsumptionBuffer::begin() {
     return true;
 }
 
+/// Addiert einen Messwert und speichert ihn nur im konfigurierten NVS-Modus sofort.
 bool ConsumptionBuffer::addConsumption(uint8_t counterId, double amount) {
     if (!_initialized) {
         logError("Verbrauchspuffer ist nicht initialisiert");
@@ -59,6 +64,7 @@ bool ConsumptionBuffer::addConsumption(uint8_t counterId, double amount) {
         return false;
     }
 
+    // Im RAM-Modus wird der Messwert ohne Flash-Schreibvorgang uebernommen.
     if (Config::Runtime::useNvsConsumptionBuffer) {
         return saveCheckpoint(next);
     }
@@ -67,6 +73,7 @@ bool ConsumptionBuffer::addConsumption(uint8_t counterId, double amount) {
     return true;
 }
 
+/// Speichert eine sofortige Uploadanforderung als NVS-Checkpoint.
 bool ConsumptionBuffer::requestImmediateUpload() {
     if (!_initialized) {
         logError("Sofortiger Upload ohne initialisierten Verbrauchspuffer angefordert");
@@ -86,10 +93,12 @@ bool ConsumptionBuffer::requestImmediateUpload() {
     return true;
 }
 
+/// Prueft, ob ein persistenter Sofort-Upload-Checkpoint aussteht.
 bool ConsumptionBuffer::isImmediateUploadRequested() const {
     return _initialized && _state.immediateUploadRequested != 0;
 }
 
+/// Prueft, ob mindestens ein Zaehler einen positiven Verbrauch gepuffert hat.
 bool ConsumptionBuffer::hasPending() const {
     if (!_initialized) {
         return false;
@@ -103,6 +112,7 @@ bool ConsumptionBuffer::hasPending() const {
     return false;
 }
 
+/// Kopiert alle Kanalwerte zusammen mit der aktuellen Uploadsequenz.
 bool ConsumptionBuffer::copyPendingBatch(
     ConsumptionRecord* records,
     size_t capacity,
@@ -135,6 +145,7 @@ bool ConsumptionBuffer::copyPendingBatch(
     return true;
 }
 
+/// Leert einen bestaetigten Batch und sichert die naechste Sequenz.
 bool ConsumptionBuffer::confirmBatchUploaded(uint64_t sequence) {
     if (!_initialized || sequence != _state.nextSequence
         || _state.nextSequence == UINT64_MAX) {
@@ -149,6 +160,7 @@ bool ConsumptionBuffer::confirmBatchUploaded(uint64_t sequence) {
     }
     next.immediateUploadRequested = 0;
 
+    // Die Folgesequenz bleibt in beiden Modi fuer Neustart-Wiederholungen erhalten.
     if (!saveCheckpoint(next)) {
         return false;
     }
@@ -159,6 +171,7 @@ bool ConsumptionBuffer::confirmBatchUploaded(uint64_t sequence) {
     return true;
 }
 
+/// Uebernimmt den neuen RAM-Zustand erst nach erfolgreichem NVS-Schreibvorgang.
 bool ConsumptionBuffer::saveCheckpoint(const ConsumptionBufferState& next) {
     if (!_nvsStore.save(next)) {
         return false;

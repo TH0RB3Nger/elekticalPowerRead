@@ -4,7 +4,11 @@
 
 #include "Logging.h"
 
+/**
+ * @brief Speichert den versionierten Verbrauchszustand und migriert alte NVS-Datensaetze.
+ */
 namespace {
+/// Kennungen unterscheiden das aktuelle und das vorherige binaere Datenformat.
 constexpr uint32_t currentStateMagic = 0x45504D32;
 constexpr uint32_t legacyStateMagic = 0x45504D31;
 constexpr size_t counterCount = 4;
@@ -12,11 +16,13 @@ constexpr char preferencesNamespace[] = "energy-cache";
 constexpr char stateKey[] = "pending";
 
 struct LegacyConsumptionBufferState {
+    /// Feldreihenfolge und Typen muessen dem vorherigen NVS-Datensatz entsprechen.
     uint32_t magic;
     uint64_t nextSequence;
     double pendingConsumption[counterCount];
 };
 
+/// Prueft alle gespeicherten Verbrauchswerte auf gueltige nichtnegative Zahlen.
 bool validAmounts(const double* amounts) {
     for (size_t index = 0; index < counterCount; ++index) {
         if (!isfinite(amounts[index]) || amounts[index] < 0.0) {
@@ -27,6 +33,7 @@ bool validAmounts(const double* amounts) {
 }
 }
 
+/// Oeffnet den Preferences-Namensraum fuer Sequenz- und Pufferdaten.
 bool NvsConsumptionStore::begin() {
     logDebug("Oeffne NVS-Namensraum fuer Sequenzstatus und Checkpoints");
     _opened = _preferences.begin(preferencesNamespace, false);
@@ -36,6 +43,7 @@ bool NvsConsumptionStore::begin() {
     return _opened;
 }
 
+/// Laedt den aktuellen Datensatz oder migriert das vorherige NVS-Format.
 bool NvsConsumptionStore::load(
     ConsumptionBufferState& state,
     bool& found
@@ -55,6 +63,7 @@ bool NvsConsumptionStore::load(
         return true;
     }
 
+    // Migriert den alten Datensatz und behaelt ausstehende Messwerte bei.
     if (storedSize == sizeof(LegacyConsumptionBufferState)) {
         LegacyConsumptionBufferState legacy{};
         if (_preferences.getBytes(stateKey, &legacy, sizeof(legacy)) != sizeof(legacy)
@@ -103,6 +112,7 @@ bool NvsConsumptionStore::load(
     return true;
 }
 
+/// Validiert und schreibt den kompletten Zustand als einzelnen NVS-Wert.
 bool NvsConsumptionStore::save(const ConsumptionBufferState& state) {
     if (!_opened
         || state.magic != currentStateMagic

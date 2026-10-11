@@ -2,6 +2,10 @@
 
 #include "Logging.h"
 
+/**
+ * @brief Wandelt synchronisierte Unix-Zeit in feste lokale Uploadintervalle um.
+ */
+/// Prueft das Intervall und verwendet bei ungueltigen Werten den 15-Minuten-Takt.
 UploadScheduler::UploadScheduler(uint8_t intervalMinutes)
     : _intervalMinutes(intervalMinutes) {
     if (_intervalMinutes == 0 || 60 % _intervalMinutes != 0) {
@@ -10,12 +14,14 @@ UploadScheduler::UploadScheduler(uint8_t intervalMinutes)
     }
 }
 
+/// Erkennt einen neuen faelligen Zeitschlitz und merkt den Upload bis zum Erfolg vor.
 bool UploadScheduler::update(time_t currentTime) {
     if (currentTime < 0) {
         logError("Ungueltige negative Systemzeit fuer Upload-Zeitplan");
         return false;
     }
 
+    // Unix-Zeitschlitze halten den Intervallabstand bei Sommerzeitwechseln konstant.
     const time_t intervalSeconds =
         static_cast<time_t>(_intervalMinutes) * 60;
     const time_t currentSlot = currentTime / intervalSeconds;
@@ -25,6 +31,7 @@ bool UploadScheduler::update(time_t currentTime) {
         logDebug("Upload-Zeitplan initialisiert");
 
         struct tm localTime;
+        // Startet NTP in einer geplanten Minute, wird dieses Intervall sofort vorgemerkt.
         if (localtime_r(&currentTime, &localTime) != nullptr
             && localTime.tm_min % _intervalMinutes == 0) {
             _due = true;
@@ -48,10 +55,12 @@ bool UploadScheduler::update(time_t currentTime) {
     return _due;
 }
 
+/// Meldet, ob ein geplanter Upload noch bestaetigt werden muss.
 bool UploadScheduler::isDue() const {
     return _due;
 }
 
+/// Loescht den vorgemerkten Zeitschlitz nach erfolgreichem Datenbank-Commit.
 void UploadScheduler::markCompleted() {
     _due = false;
     logDebug("Vorgemerkter Upload-Zeitpunkt nach Erfolg abgeschlossen");

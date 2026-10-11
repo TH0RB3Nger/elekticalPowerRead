@@ -4,6 +4,9 @@
 
 #include "Logging.h"
 
+/**
+ * @brief Zeigt den LED-Zustand separat an, damit Uploads das Blinksignal nicht blockieren.
+ */
 namespace {
 portMUX_TYPE statusMux = portMUX_INITIALIZER_UNLOCKED;
 constexpr uint8_t ledBrightness = 48;
@@ -11,6 +14,7 @@ constexpr TickType_t ledTaskInterval = pdMS_TO_TICKS(50);
 constexpr TickType_t uploadBlinkHalfPeriod = pdMS_TO_TICKS(500);
 }
 
+/// Initialisiert die PWM-Ausgaenge und startet die Anzeigeaufgabe einmalig.
 bool StatusLed::begin() {
     pinMode(LED_RED, OUTPUT);
     pinMode(LED_GREEN, OUTPUT);
@@ -37,16 +41,19 @@ bool StatusLed::begin() {
     return true;
 }
 
+/// Uebergibt den neuen Zustand threadsicher an die LED-Aufgabe.
 void StatusLed::setStatus(Status status) {
     portENTER_CRITICAL(&statusMux);
     _status = status;
     portEXIT_CRITICAL(&statusMux);
 }
 
+/// Leitet den FreeRTOS-Einstieg an die Instanzmethode weiter.
 void StatusLed::taskEntry(void* parameter) {
     static_cast<StatusLed*>(parameter)->run();
 }
 
+/// Rendert Statuswechsel und das periodische Blinksignal fuer Uploads.
 void StatusLed::run() {
     Status previousStatus = Status::Error;
     bool previousBlinkPhase = false;
@@ -58,6 +65,7 @@ void StatusLed::run() {
         status = _status;
         portEXIT_CRITICAL(&statusMux);
 
+        // Nur der Uploadzustand blinkt; andere Zustaende werden bei Aenderung ausgegeben.
         const bool blinkPhase =
             ((xTaskGetTickCount() / uploadBlinkHalfPeriod) % 2) == 0;
         if (!hasRendered
@@ -92,11 +100,13 @@ void StatusLed::run() {
     }
 }
 
+/// Setzt die drei aktiven RGB-Helligkeitswerte ueber invertierte PWM.
 void StatusLed::writeColor(
     uint8_t red,
     uint8_t green,
     uint8_t blue
 ) {
+    // Die eingebaute RGB-LED wird mit aktiv niedrigen PWM-Ausgaengen angesteuert.
     analogWrite(LED_RED, 255 - red);
     analogWrite(LED_GREEN, 255 - green);
     analogWrite(LED_BLUE, 255 - blue);

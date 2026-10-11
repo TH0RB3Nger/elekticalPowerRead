@@ -2,6 +2,10 @@
 
 #include "Logging.h"
 
+/**
+ * @brief Meldet aktuellen und minimalen freien Heap im RAM-Puffermodus.
+ */
+/// Begrenzt die konfigurierte Heap-Reserve auf den gueltigen Prozentbereich.
 RamStorageMonitor::RamStorageMonitor(
     uint8_t minimumFreePercent,
     unsigned long checkIntervalMs
@@ -9,6 +13,7 @@ RamStorageMonitor::RamStorageMonitor(
     : _minimumFreePercent(minimumFreePercent > 100 ? 100 : minimumFreePercent),
       _checkIntervalMs(checkIntervalMs) {}
 
+/// Misst den freien Heap periodisch und aktualisiert den Warnstatus.
 bool RamStorageMonitor::update(unsigned long now) {
     if (_lastCheck != 0 && now - _lastCheck < _checkIntervalMs) {
         return _statsAvailable;
@@ -17,6 +22,7 @@ bool RamStorageMonitor::update(unsigned long now) {
 
     const uint32_t freeBytes = ESP.getFreeHeap();
     const uint32_t totalBytes = ESP.getHeapSize();
+    // Der Tiefstwert zeigt den kleinsten freien Heap seit dem Start.
     const uint32_t minimumFreeBytes = ESP.getMinFreeHeap();
     if (totalBytes == 0 || freeBytes > totalBytes) {
         _statsAvailable = false;
@@ -46,6 +52,7 @@ bool RamStorageMonitor::update(unsigned long now) {
     return true;
 }
 
+/// Liefert nur bei gueltiger letzter Messung den kritischen Heap-Status.
 bool RamStorageMonitor::isCritical() const {
     return _statsAvailable && _critical;
 }

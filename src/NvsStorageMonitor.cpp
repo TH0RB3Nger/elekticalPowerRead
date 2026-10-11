@@ -4,6 +4,10 @@
 
 #include "Logging.h"
 
+/**
+ * @brief Misst freie NVS-Eintraege; Uploadentscheidungen trifft die Hauptschleife.
+ */
+/// Begrenzt die konfigurierte Schwelle auf den gueltigen Prozentbereich.
 NvsStorageMonitor::NvsStorageMonitor(
     uint8_t minimumFreePercent,
     unsigned long checkIntervalMs
@@ -11,6 +15,7 @@ NvsStorageMonitor::NvsStorageMonitor(
     : _minimumFreePercent(minimumFreePercent > 100 ? 100 : minimumFreePercent),
     _checkIntervalMs(checkIntervalMs) {}
 
+/// Liest NVS-Statistik im konfigurierten Intervall und aktualisiert den Warnstatus.
 bool NvsStorageMonitor::update(unsigned long now) {
     if (_lastCheck != 0 && now - _lastCheck < _checkIntervalMs) {
         return _statsAvailable;
@@ -57,6 +62,7 @@ bool NvsStorageMonitor::update(unsigned long now) {
     return true;
 }
 
+/// Liefert nur bei gueltiger letzter Messung den kritischen Speicherstatus.
 bool NvsStorageMonitor::isCritical() const {
     return _statsAvailable && _critical;
 }

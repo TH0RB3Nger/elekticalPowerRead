@@ -10,6 +10,7 @@ namespace {
 constexpr time_t plausibleEpoch = 1700000000;
 }
 
+/// Startet die SNTP-Konfiguration einmalig, auch bei spaeteren WLAN-Reconnects.
 void NtpClock::begin() {
     if (_started) {
         return;
@@ -29,12 +30,14 @@ void NtpClock::begin() {
     logInfo("NTP gestartet; Europe/Berlin mit automatischer Sommerzeit aktiviert");
 }
 
+/// Liefert die Systemzeit nur dann als gueltig, wenn sie plausibel synchronisiert ist.
 bool NtpClock::getTime(time_t& currentTime) const {
     currentTime = time(nullptr);
     const bool plausible = _started && currentTime >= plausibleEpoch;
     return plausible;
 }
 
+/// Protokolliert NTP-Wartezeit und die erste erfolgreiche Zeitsynchronisierung.
 void NtpClock::logStatus() {
     if (_synchronizationLogged) {
         return;

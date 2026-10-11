@@ -18,16 +18,22 @@
 #error "Config.h fehlt. Kopiere include/Config.h.example nach include/Config.h und trage deine Werte ein."
 #endif
 
+/**
+ * @brief Prueft und speichert sequenzierte Verbrauchsintervalle atomar in MySQL.
+ */
 namespace {
 constexpr size_t expectedCounterCount = 4;
 
 WiFiClient databaseClient;
 MySQL_Connection mysqlConnection(&databaseClient);
 
+/// Prueft, ob die Datenbank-ID zu einem der vier Zaehlerkanaele gehoert.
+/// Prueft, ob die Datenbank-ID zu einem der vier Zaehlerkanaele gehoert.
 bool validCounterId(uint8_t counterId) {
     return counterId >= 4 && counterId <= 7;
 }
 
+/// Liest die Datenbanksequenz ohne Vorzeichen oder uint64_t-Ueberlauf.
 bool parseUint64(const char* value, uint64_t& parsed) {
     if (value == nullptr || *value == '\0') {
         return false;
@@ -49,6 +55,7 @@ bool parseUint64(const char* value, uint64_t& parsed) {
     return true;
 }
 
+/// Verbindet nur bei aktivem WLAN und vollstaendiger Datenbankkonfiguration.
 bool ensureConnected() {
     if (mysqlConnection.connected()) {
         logDebugPlus("Datenbankverbindung ist bereits aktiv");
@@ -94,6 +101,7 @@ bool ensureConnected() {
     return true;
 }
 
+/// Fuehrt ein SQL-Statement aus und nennt bei Fehlern dessen Rolle im Log.
 bool executeInTransaction(const char* statement, const char* step) {
     MySQL_Query query(&mysqlConnection);
     if (query.execute(statement)) {
@@ -104,6 +112,7 @@ bool executeInTransaction(const char* statement, const char* step) {
     return false;
 }
 
+/// Rollt Teiltransaktionen zurueck, bevor die Netzwerkverbindung geschlossen wird.
 void rollbackAndClose() {
     logWarning("Datenbanktransaktion wird zurueckgerollt");
     if (mysqlConnection.connected()) {
@@ -112,6 +121,7 @@ void rollbackAndClose() {
     mysqlConnection.close();
 }
 
+/// Formatiert einen geprueften, nicht negativen Messwert fuer die SQL-Schnittstelle.
 bool formatAmount(double amount, char* output, size_t outputSize) {
     if (!isfinite(amount) || amount < 0.0) {
         logError("Messwert ist negativ oder nicht endlich");
@@ -127,15 +137,20 @@ bool formatAmount(double amount, char* output, size_t outputSize) {
 }
 }
 
+///Stellt bei verfuegbarem WLAN eine Verbindung zum Datenbankserver her.
 bool DatabaseConnection::connect() {
     logDebug("Expliziter Datenbankverbindungsaufbau angefordert");
     return ensureConnected();
 }
 
+/// Meldet, ob der MySQL-Connector aktuell eine offene Verbindung hat.
+/// Meldet, ob der MySQL-Connector aktuell eine offene Verbindung hat.
 bool DatabaseConnection::isConnected() const {
     return mysqlConnection.connected();
 }
 
+/// Formatiert die unteren 48 Bit der eFuse-MAC als stabile Geraete-ID.
+/// Erzeugt aus der eFuse-MAC eine stabile, zwoelfstellige Geraete-ID.
 String DatabaseConnection::deviceId() const {
     char identifier[13];
     snprintf(
@@ -147,6 +162,8 @@ String DatabaseConnection::deviceId() const {
     return String(identifier);
 }
 
+/// Speichert vier Kanalwerte und Sequenzstatus innerhalb einer Transaktion.
+/// Validiert und speichert einen sequenzierten Vier-Kanal-Batch atomar.
 bool DatabaseConnection::addConsumptionBatch(
     const String& deviceIdentifier,
     uint64_t sequence,
@@ -202,6 +219,7 @@ bool DatabaseConnection::addConsumptionBatch(
     logDebug("Datenbanktransaktion fuer Messintervall gestartet");
 
     char statement[256];
+    // Sperrt die Geraetezeile, damit Sequenzpruefung und parallele Batches serialisiert sind.
     snprintf(
         statement,
         sizeof(statement),
@@ -239,6 +257,7 @@ bool DatabaseConnection::addConsumptionBatch(
         }
     }
 
+    // Ein bereits gespeicherter Batch kann nach verlorener Bestaetigung erneut eintreffen.
     if (sequence <= lastSequence) {
         if (!executeInTransaction("COMMIT", "COMMIT Wiederholung")) {
             rollbackAndClose();
@@ -254,6 +273,7 @@ bool DatabaseConnection::addConsumptionBatch(
         return false;
     }
 
+    // Verwendet fuer alle vier Zaehlerzeilen denselben Datenbankzeitstempel.
     if (!executeInTransaction(
             "SET @energy_measurement_time = UTC_TIMESTAMP(6)",
             "Zeitstempel setzen")) {
