@@ -1,5 +1,7 @@
 #include "Logging.h"
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <time.h>
 
 #include "Config.h"
@@ -10,6 +12,16 @@ constexpr LogLevel currentLogLevel = Config::Runtime::minimumLogLevel;
 
 /// Unterhalb dieses Unix-Zeitpunkts gilt die Uhr als noch nicht synchronisiert.
 constexpr time_t plausibleEpoch = 1700000000;
+SemaphoreHandle_t logMutex = nullptr;
+}
+
+/// Erstellt vor Taskstart den Mutex fuer zusammenhaengende Logzeilen.
+bool beginLogging() {
+    if (logMutex != nullptr) {
+        return true;
+    }
+    logMutex = xSemaphoreCreateMutex();
+    return logMutex != nullptr;
 }
 
 /**
@@ -19,6 +31,9 @@ void logMessage(LogLevel level, const String& message) {
     if (level > currentLogLevel) {
         return;
     }
+
+    const bool locked = logMutex != nullptr
+        && xSemaphoreTake(logMutex, portMAX_DELAY) == pdTRUE;
 
     char timestamp[40];
     const time_t currentTime = time(nullptr);
@@ -61,6 +76,10 @@ void logMessage(LogLevel level, const String& message) {
     Serial.print(levelName);
     Serial.print("] ");
     Serial.println(message);
+
+    if (locked) {
+        xSemaphoreGive(logMutex);
+    }
 }
 
 /// Leitet eine Fehlermeldung an den gemeinsamen Logger weiter.

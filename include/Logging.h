@@ -13,6 +13,9 @@ enum LogLevel {
 /// Gibt eine Meldung aus, wenn ihre Stufe die konfigurierte Stufe nicht uebersteigt.
 void logMessage(LogLevel level, const String& message);
 
+/// Initialisiert die Synchronisierung fuer Protokollausgaben mehrerer Tasks.
+bool beginLogging();
+
 /// Protokolliert einen Fehler.
 void logError(const String& message);
 

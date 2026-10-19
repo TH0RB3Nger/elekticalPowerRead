@@ -184,7 +184,7 @@ Uploadversuchen erneut geprueft.
 | `include/Config.h.example` | Vorlage fuer die lokale, zentrale Konfiguration. |
 | `include/Config.h` | Lokale WLAN-, Datenbank- und Laufzeiteinstellungen; wird ignoriert. |
 | `src/CountPin.cpp`, `include/CountPin.h` | S0-Impulszaehler: aktive Pulsdauer, Signalpolaritaet, Mindestabstand und Aufloesungsumrechnung. |
-| `src/Logging.cpp`, `include/Logging.h` | Zeitgestempelte Protokollierung mit konfigurierbaren Stufen. |
+| `src/Logging.cpp`, `include/Logging.h` | Zeitgestempelte, task-synchronisierte Protokollierung mit konfigurierbaren Stufen. |
 | `src/WirelessConnection.cpp`, `include/WirelessConnection.h` | WLAN-Verbindung, Reconnects, Events und Signalstaerke. |
 | `src/StatusLed.cpp`, `include/StatusLed.h` | RGB-Statusanzeige; unabhaengige LED-Aufgabe fuer Blinksignale waehrend blockierender Uploads. |
 | `src/NtpClock.cpp`, `include/NtpClock.h` | NTP-Start, Plausibilitaetspruefung und Europe/Berlin-Systemzeit. |
@@ -203,6 +203,16 @@ keiten und die fuer ESP32 notwendige Ausschlussliste stehen in
 `platformio.ini`. Die `lib_ignore`-Eintraege vermeiden Konflikte mit
 WLAN-/Ethernet-Shield-Bibliotheken, die transitiv von der MySQL-Bibliothek
 angeboten werden.
+
+Auf dem Dual-Core-Nano-ESP32 laeuft die Arduino-Messschleife weiter auf dem
+Arduino-Core. Ein separater FreeRTOS-Task auf Core 0 erledigt blockierende
+MariaDB-/MySQL-Verbindungspruefungen und Uploads, damit diese die Verarbeitung
+neuer Zaehlerstaende nicht aufhalten. Auftraege und Ergebnisse werden ueber
+FreeRTOS-Queues uebergeben; waehrend eines Uploads bleibt die Impulserfassung
+per GPIO-Interrupt aktiv. Der Haupttask uebernimmt die inzwischen gezaehlten
+Pulse nach Abschluss in den Verbrauchspuffer. Kann der Worker oder der
+task-sichere Logger nicht gestartet werden, verwendet die Firmware den
+bisherigen synchronen Datenbankpfad.
 
 ### RGB-Statusanzeige
 
@@ -245,7 +255,11 @@ Datenbankkommunikation erhalten bleibt.
    erhoeht. Bei Fehlern bleibt der Puffer bis zum naechsten Versuch bestehen.
    Im RAM-Modus gehen noch nicht bestaetigte Werte bei Stromverlust oder Reset
    verloren; im NVS-Modus bleiben sie erhalten.
-7. Die Speicherueberwachung laeuft unabhaengig von WLAN. Im NVS-Modus kann
+7. Der Arduino-Haupttask erfasst Zaehlerstaende und betreut WLAN/NTP; ein
+   separater Task auf Core 0 fuehrt blockierende Datenbankzugriffe aus. Solange
+   ein Upload laeuft, werden neue Pulse weiterhin durch die GPIO-Interrupts
+   gezaehlt und direkt nach Abschluss des Uploads in den Puffer uebernommen.
+   Die Speicherueberwachung laeuft unabhaengig von WLAN. Im NVS-Modus kann
    knapper NVS-Freiplatz einen zusaetzlichen Upload ausloesen. Im RAM-Modus
    meldet sie knappen Heap und schaltet die Status-LED auf Orange; ein Upload
    wird dadurch nicht ausgeloest, da der RAM-Puffer fest dimensioniert ist.
