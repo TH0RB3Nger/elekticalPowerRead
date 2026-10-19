@@ -22,6 +22,9 @@ LogLevel getLogLevel();
 /// Liefert den Namen einer Logstufe fuer die serielle Befehlsausgabe.
 const char* getLogLevelName(LogLevel level);
 
+/// Initialisiert die Synchronisierung fuer Protokollausgaben mehrerer Tasks.
+bool beginLogging();
+
 /// Protokolliert einen Fehler.
 void logError(const String& message);
 

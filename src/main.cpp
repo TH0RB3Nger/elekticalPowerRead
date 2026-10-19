@@ -1,5 +1,8 @@
 #include <Arduino.h>
 #include <float.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
 
 #if __has_include("Config.h")
 #include "Config.h"
@@ -21,6 +24,20 @@
 #include "WirelessConnection.h"
 
 namespace {
+enum class DatabaseCommandType : uint8_t {
+    CheckConnection,
+    UploadPending
+};
+
+struct DatabaseCommand {
+    DatabaseCommandType type;
+};
+
+struct DatabaseResult {
+    DatabaseCommandType type;
+    bool succeeded;
+};
+
 double mainLoopLoadPercent = 0.0;
 
 enum class ProgramMode : uint8_t {
@@ -146,6 +163,14 @@ unsigned long lastDatabaseCheck = 0;
 /// Erkennt WLAN-Verbindungsaufbauten fuer einen einmaligen DB-Verbindungstest.
 bool wifiWasConnected = false;
 
+/// Uebergibt blockierende Datenbankarbeit an einen Task auf Core 0.
+QueueHandle_t databaseCommandQueue = nullptr;
+QueueHandle_t databaseResultQueue = nullptr;
+bool databaseWorkerActive = false;
+bool databaseWorkerBusy = false;
+bool databaseUploadInProgress = false;
+bool databaseCheckRequested = false;
+
 /**
  * @brief Berechnet den LED-Zustand in der festgelegten Prioritaetsreihenfolge.
  */
@@ -159,6 +184,8 @@ void updateStatusLed() {
         || !wirelessConnection.isConnected()
         || uploadFailed) {
         statusLed.setStatus(StatusLed::Status::Error);
+    } else if (databaseUploadInProgress) {
+        statusLed.setStatus(StatusLed::Status::Uploading);
     } else if ((Config::Runtime::useNvsConsumptionBuffer
             && nvsStorageMonitor.isCritical())
         || (!Config::Runtime::useNvsConsumptionBuffer
@@ -168,6 +195,129 @@ void updateStatusLed() {
         statusLed.setStatus(StatusLed::Status::DatabaseUnavailable);
     } else {
         statusLed.setStatus(StatusLed::Status::WifiConnected);
+    }
+}
+
+/// Fuehrt ausschliesslich Datenbankoperationen aus dem Worker-Task aus.
+void databaseWorkerTask(void*) {
+    DatabaseCommand command{};
+    while (true) {
+        if (xQueueReceive(
+                databaseCommandQueue,
+                &command,
+                portMAX_DELAY) != pdPASS) {
+            logError("Datenbank-Worker konnte keinen Auftrag aus der Queue lesen");
+            continue;
+        }
+
+        const bool succeeded =
+            command.type == DatabaseCommandType::CheckConnection
+                ? database.checkConnection()
+                : consumptionSync.uploadPending();
+        const DatabaseResult result{command.type, succeeded};
+        if (xQueueSend(databaseResultQueue, &result, portMAX_DELAY) != pdPASS) {
+            logError("Datenbank-Worker konnte kein Ergebnis zurueckmelden");
+        }
+    }
+}
+
+/// Startet den Datenbank-Worker auf dem von der Messschleife getrennten Core.
+bool startDatabaseWorker() {
+    databaseCommandQueue = xQueueCreate(1, sizeof(DatabaseCommand));
+    databaseResultQueue = xQueueCreate(1, sizeof(DatabaseResult));
+    if (databaseCommandQueue == nullptr || databaseResultQueue == nullptr) {
+        if (databaseCommandQueue != nullptr) {
+            vQueueDelete(databaseCommandQueue);
+            databaseCommandQueue = nullptr;
+        }
+        if (databaseResultQueue != nullptr) {
+            vQueueDelete(databaseResultQueue);
+            databaseResultQueue = nullptr;
+        }
+        logError("Queues fuer den Datenbank-Worker konnten nicht angelegt werden");
+        return false;
+    }
+
+    if (xTaskCreatePinnedToCore(
+            databaseWorkerTask,
+            "database_worker",
+            8192,
+            nullptr,
+            1,
+            nullptr,
+            0) != pdPASS) {
+        vQueueDelete(databaseCommandQueue);
+        vQueueDelete(databaseResultQueue);
+        databaseCommandQueue = nullptr;
+        databaseResultQueue = nullptr;
+        logError("Datenbank-Worker auf Core 0 konnte nicht gestartet werden");
+        return false;
+    }
+
+    databaseWorkerActive = true;
+    logInfo("Datenbank-Worker auf Core 0 gestartet; Messschleife bleibt entkoppelt");
+    return true;
+}
+
+/// Uebernimmt Worker-Ergebnisse im Haupttask und aktualisiert Uploadstatus.
+void processDatabaseResults() {
+    if (!databaseWorkerActive) {
+        return;
+    }
+
+    DatabaseResult result{};
+    while (xQueueReceive(databaseResultQueue, &result, 0) == pdPASS) {
+        databaseWorkerBusy = false;
+        if (result.type == DatabaseCommandType::CheckConnection) {
+            if (result.succeeded) {
+                logInfo("Datenbankverbindung nach WLAN-Aufbau erfolgreich");
+            } else {
+                logWarning(
+                    "WLAN steht, aber die Datenbank ist nicht erreichbar; "
+                    "Uploadversuche pruefen die Verbindung erneut"
+                );
+            }
+            continue;
+        }
+
+        databaseUploadInProgress = false;
+        uploadFailed = !result.succeeded;
+        if (result.succeeded) {
+            uploadScheduler.markCompleted();
+        }
+        updateStatusLed();
+    }
+}
+
+/// Prueft nach einem WLAN-Aufbau die Datenbank, ohne den Mess-Task zu blockieren.
+void serviceDatabaseCheck() {
+    if (!databaseCheckRequested) {
+        return;
+    }
+
+    if (!databaseWorkerActive) {
+        const bool connected = database.checkConnection();
+        if (connected) {
+            logInfo("Datenbankverbindung nach WLAN-Aufbau erfolgreich");
+        } else {
+            logWarning(
+                "WLAN steht, aber die Datenbank ist nicht erreichbar; "
+                "Uploadversuche pruefen die Verbindung erneut"
+            );
+        }
+        databaseCheckRequested = false;
+        return;
+    }
+
+    if (databaseWorkerBusy) {
+        return;
+    }
+    const DatabaseCommand command{DatabaseCommandType::CheckConnection};
+    if (xQueueSend(databaseCommandQueue, &command, 0) == pdPASS) {
+        databaseWorkerBusy = true;
+        databaseCheckRequested = false;
+    } else {
+        logError("Datenbankverbindungspruefung konnte nicht eingereiht werden");
     }
 }
 
@@ -393,6 +543,10 @@ void serviceConnectedNetwork(unsigned long now) {
         uploadScheduler.update(synchronizedTime);
     }
 
+    if (databaseWorkerActive && databaseWorkerBusy) {
+        return;
+    }
+
     const bool scheduledUpload = uploadScheduler.isDue();
     const bool immediateUpload =
         consumptionBuffer.isImmediateUploadRequested();
@@ -425,6 +579,20 @@ void serviceConnectedNetwork(unsigned long now) {
         statusLed.setStatus(StatusLed::Status::Uploading);
     } else {
         updateStatusLed();
+    }
+
+    if (databaseWorkerActive) {
+        const DatabaseCommand command{DatabaseCommandType::UploadPending};
+        if (xQueueSend(databaseCommandQueue, &command, 0) != pdPASS) {
+            logError("Datenbankupload konnte nicht in die Worker-Queue eingereiht werden");
+            uploadFailed = true;
+            updateStatusLed();
+            return;
+        }
+
+        databaseWorkerBusy = true;
+        databaseUploadInProgress = true;
+        return;
     }
 
     const bool uploadSucceeded = consumptionSync.uploadPending();
@@ -493,6 +661,10 @@ void serviceStop(unsigned long now) {
  */
 void setup() {
     Serial.begin(Config::Runtime::serialBaudRate);
+    const bool loggingSynchronized = beginLogging();
+    if (!loggingSynchronized) {
+        logError("Logger-Mutex konnte nicht erstellt werden; Datenbank-Worker bleibt aus");
+    }
     statusLed.begin();
     if (!serialCommandProcessor.begin(handleImmediateStop, nullptr)) {
         logError("Serieller Befehlstask konnte nicht gestartet werden");
@@ -550,6 +722,14 @@ void setup() {
         logError("Verbrauchspuffer konnte nicht initialisiert werden");
     }
 
+    if (loggingSynchronized) {
+        startDatabaseWorker();
+    }
+
+    if (loggingSynchronized) {
+        startDatabaseWorker();
+    }
+
     if (wirelessConnection.connect()) {
         wirelessConnection.printStatus();
         clockSync.begin();
@@ -561,7 +741,7 @@ void setup() {
 }
 
 /**
- * @brief Sammelt Impulse, prueft WLAN und bedient NTP sowie Datenbank-Sync.
+ * @brief Sammelt Impulse und bedient WLAN; DB-Zugriffe laufen im Worker-Task.
  */
 void loop() {
     const unsigned long loopStartedAt = micros();
@@ -575,6 +755,7 @@ void loop() {
     static RejectedPulseCounts rejected3{};
     static RejectedPulseCounts rejected4{};
 
+    processDatabaseResults();
     const bool captureActive = programMode == ProgramMode::Running
         || programMode == ProgramMode::Stopping;
     if (captureActive) {
@@ -613,6 +794,7 @@ void loop() {
         }
     }
     wifiWasConnected = wifiConnected;
+    serviceDatabaseCheck();
 
     static uint64_t bufferedCount1 = 0;
     static uint64_t bufferedCount2 = 0;
@@ -631,7 +813,9 @@ void loop() {
         logRejectedPulseDiagnostics(counter4, Config::Counters::databaseId4, rejected4);
     }
 
-    if (programMode == ProgramMode::Running && consumptionBufferInitialized) {
+    if (consumptionBufferInitialized
+        && (!Config::Runtime::useNvsConsumptionBuffer
+            || !databaseUploadInProgress)) {
         const unsigned long now = millis();
         if (Config::Runtime::useNvsConsumptionBuffer) {
             nvsStorageMonitor.update(now);
