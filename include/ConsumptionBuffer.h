@@ -19,7 +19,7 @@ public:
 
     /**
      * @brief Addiert den Verbrauch eines Zaehlerkanals zum aktiven Puffer.
-     * @param counterId Feste Datenbank-ID des Zaehlerkanals (4 bis 7).
+        * @param counterId Konfigurierte Datenbank-ID des Zaehlerkanals.
      * @param amount Hinzuzurechnender Verbrauchswert in kWh.
      * @return true, wenn der neue Pufferstand angenommen wurde.
      */
@@ -33,6 +33,9 @@ public:
 
     /// Meldet, ob mindestens ein positiver Verbrauchswert aussteht.
     bool hasPending() const;
+
+    /// Liefert die Summe der noch nicht bestaetigten Verbrauchswerte in kWh.
+    double getPendingConsumptionKWh() const;
 
     /**
      * @brief Kopiert die vier Kanalwerte mit der naechsten Datenbanksequenz.

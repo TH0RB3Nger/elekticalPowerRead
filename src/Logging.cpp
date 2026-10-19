@@ -5,11 +5,33 @@
 #include "Config.h"
 
 namespace {
-/// Die Mindeststufe wird zentral in Config.h festgelegt.
-constexpr LogLevel currentLogLevel = Config::Runtime::minimumLogLevel;
+/// Startwert aus Config.h; serielle Befehle duerfen ihn zur Laufzeit aendern.
+LogLevel currentLogLevel = Config::Runtime::minimumLogLevel;
 
 /// Unterhalb dieses Unix-Zeitpunkts gilt die Uhr als noch nicht synchronisiert.
 constexpr time_t plausibleEpoch = 1700000000;
+}
+
+/// Setzt die Laufzeitstufe des zentralen Loggers.
+void setLogLevel(LogLevel level) {
+    currentLogLevel = level;
+}
+
+/// Gibt die aktuell aktive Laufzeitstufe zurueck.
+LogLevel getLogLevel() {
+    return currentLogLevel;
+}
+
+/// Wandelt einen Log-Level in seine kurze serielle Bezeichnung um.
+const char* getLogLevelName(LogLevel level) {
+    switch (level) {
+        case LOG_ERROR: return "ERROR";
+        case LOG_WARNING: return "WARNING";
+        case LOG_INFO: return "INFO";
+        case LOG_DEBUG: return "DEBUG";
+        case LOG_DEBUG_PLUS: return "DEBUG_PLUS";
+        default: return "UNKNOWN";
+    }
 }
 
 /**
@@ -34,28 +56,7 @@ void logMessage(LogLevel level, const String& message) {
         snprintf(timestamp, sizeof(timestamp), "[Uhrzeit nicht synchronisiert]");
     }
 
-    const char* levelName = "INFO";
-    switch (level) {
-        case LOG_ERROR:
-            levelName = "ERROR";
-            break;
-        case LOG_WARNING:
-            levelName = "WARNING";
-            break;
-        case LOG_INFO:
-            levelName = "INFO";
-            break;
-        case LOG_DEBUG:
-            levelName = "DEBUG";
-            break;
-        case LOG_DEBUG_PLUS:
-            levelName = "DEBUG+";
-            break;
-        default:
-            levelName = "INFO";
-            break;
-    }
-
+    const char* levelName = getLogLevelName(level);
     Serial.print(timestamp);
     Serial.print("[");
     Serial.print(levelName);

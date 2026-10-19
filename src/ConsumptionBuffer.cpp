@@ -9,8 +9,23 @@
  * @brief Aggregiert Messwerte im RAM und schreibt je nach Modus NVS-Checkpoints.
  */
 namespace {
-constexpr uint8_t firstCounterId = 4;
 constexpr size_t counterCount = 4;
+constexpr uint8_t counterIds[counterCount] = {
+    Config::Counters::databaseId1,
+    Config::Counters::databaseId2,
+    Config::Counters::databaseId3,
+    Config::Counters::databaseId4
+};
+
+bool findCounterIndex(uint8_t counterId, size_t& index) {
+    for (size_t candidate = 0; candidate < counterCount; ++candidate) {
+        if (counterIds[candidate] == counterId) {
+            index = candidate;
+            return true;
+        }
+    }
+    return false;
+}
 }
 
 /// Initialisiert den NVS-Status und laedt ausstehende Werte, falls vorhanden.
@@ -43,16 +58,14 @@ bool ConsumptionBuffer::addConsumption(uint8_t counterId, double amount) {
         logError("Verbrauchspuffer ist nicht initialisiert");
         return false;
     }
-    if (counterId < firstCounterId
-        || counterId >= firstCounterId + counterCount
-        || !isfinite(amount)
-        || amount < 0.0) {
+    size_t index = 0;
+    if (!findCounterIndex(counterId, index)
+        || !isfinite(amount) || amount < 0.0) {
         logError("Ungueltiger Zaehler oder Verbrauchswert fuer Verbrauchspuffer");
         return false;
     }
 
     ConsumptionBufferState next = _state;
-    const size_t index = counterId - firstCounterId;
     next.pendingConsumption[index] += amount;
     if (!isfinite(next.pendingConsumption[index])
         || (amount > 0.0
@@ -112,6 +125,19 @@ bool ConsumptionBuffer::hasPending() const {
     return false;
 }
 
+/// Addiert die vier noch nicht bestaetigten Kanalwerte fuer die Statusanzeige.
+double ConsumptionBuffer::getPendingConsumptionKWh() const {
+    if (!_initialized) {
+        return 0.0;
+    }
+
+    double total = 0.0;
+    for (const double amount : _state.pendingConsumption) {
+        total += amount;
+    }
+    return total;
+}
+
 /// Kopiert alle Kanalwerte zusammen mit der aktuellen Uploadsequenz.
 bool ConsumptionBuffer::copyPendingBatch(
     ConsumptionRecord* records,
@@ -131,7 +157,7 @@ bool ConsumptionBuffer::copyPendingBatch(
     }
 
     for (size_t index = 0; index < counterCount; ++index) {
-        records[index].counterId = firstCounterId + index;
+        records[index].counterId = counterIds[index];
         records[index].measuredKWh = _state.pendingConsumption[index];
     }
 

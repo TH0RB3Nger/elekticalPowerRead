@@ -11,7 +11,16 @@ public:
         Error,
         Uploading,
         StorageCritical,
-        WifiConnected
+        DatabaseUnavailable,
+        WifiConnected,
+        Off
+    };
+
+    enum class StopIndicator : uint8_t {
+        Off,
+        Stopping,
+        Stopped,
+        Killed
     };
 
     /// Initialisiert die LED-Pins und startet die unabhaengige Anzeigeaufgabe.
@@ -20,11 +29,15 @@ public:
     /// Setzt den anzuzeigenden Zustand threadsicher.
     void setStatus(Status status);
 
+    /// Steuert die separate orange Benutzer-LED unabhaengig von der RGB-LED.
+    void setStopIndicator(StopIndicator indicator);
+
 private:
     static void taskEntry(void* parameter);
     void run();
     void writeColor(uint8_t red, uint8_t green, uint8_t blue);
 
     Status _status = Status::Error;
+    StopIndicator _stopIndicator = StopIndicator::Off;
     bool _taskStarted = false;
 };

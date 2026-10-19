@@ -70,4 +70,10 @@ public:
 
     /// Setzt den lokalen Impulsstand interruptgeschuetzt auf null.
     void reset();
+
+    /// Pausiert die Impulserfassung durch Abmelden des GPIO-Interrupts.
+    void pause();
+
+    /// Setzt einen zuvor pausierten GPIO-Interrupt wieder fort.
+    void resume();
 };

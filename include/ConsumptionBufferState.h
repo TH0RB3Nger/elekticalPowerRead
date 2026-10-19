@@ -10,7 +10,7 @@ struct ConsumptionBufferState {
     uint32_t magic;
     /// Sequenznummer des naechsten Datenbank-Batches.
     uint64_t nextSequence;
-    /// Noch nicht bestaetigter Verbrauch je Zaehler-ID 4 bis 7 in kWh.
+    /// Noch nicht bestaetigter Verbrauch je Zaehlerkanal 1 bis 4 in kWh.
     double pendingConsumption[4];
     /// Markiert einen persistent vorgemerkten sofortigen Upload.
     uint8_t immediateUploadRequested;

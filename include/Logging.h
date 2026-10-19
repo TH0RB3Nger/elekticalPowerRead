@@ -13,6 +13,15 @@ enum LogLevel {
 /// Gibt eine Meldung aus, wenn ihre Stufe die konfigurierte Stufe nicht uebersteigt.
 void logMessage(LogLevel level, const String& message);
 
+/// Aendert die Logstufe bis zum naechsten Neustart.
+void setLogLevel(LogLevel level);
+
+/// Liefert die aktuell wirksame Logstufe.
+LogLevel getLogLevel();
+
+/// Liefert den Namen einer Logstufe fuer die serielle Befehlsausgabe.
+const char* getLogLevelName(LogLevel level);
+
 /// Protokolliert einen Fehler.
 void logError(const String& message);
 

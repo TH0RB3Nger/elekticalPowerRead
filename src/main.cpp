@@ -14,11 +14,30 @@
 #include "NtpClock.h"
 #include "NvsStorageMonitor.h"
 #include "RamStorageMonitor.h"
+#include "SerialCommandProcessor.h"
 #include "StatusLed.h"
+#include "StatusWebServer.h"
 #include "UploadScheduler.h"
 #include "WirelessConnection.h"
 
 namespace {
+double mainLoopLoadPercent = 0.0;
+
+enum class ProgramMode : uint8_t {
+    Running,
+    Stopping,
+    Stopped,
+    Killed
+};
+
+ProgramMode programMode = ProgramMode::Running;
+volatile bool killSignal = false;
+bool stopRequested = false;
+bool stopUploadAttempted = false;
+bool stopNetworkWarningShown = false;
+bool stopBufferWarningShown = false;
+unsigned long lastStopUploadAttempt = 0;
+
 static_assert(
     Config::Runtime::minimumPulseDurationMs <= 4294967UL
         && Config::Runtime::minimumPulseIntervalMs <= 4294967UL,
@@ -29,9 +48,16 @@ static_assert(
         && Config::Runtime::resolutionPulsesPerKWh <= DBL_MAX,
     "Die Zaehleraufloesung muss positiv und endlich sein"
 );
+static_assert(
+    Config::Counters::pin1 != LED_BUILTIN
+        && Config::Counters::pin2 != LED_BUILTIN
+        && Config::Counters::pin3 != LED_BUILTIN
+        && Config::Counters::pin4 != LED_BUILTIN,
+    "LED_BUILTIN muss fuer die orange Status-LED frei bleiben"
+);
 
 /// Netzwerkzugang fuer die lokale WLAN-Verbindung.
-WirelessConnection wifi(
+WirelessConnection wirelessConnection(
     Config::Wifi::ssid,
     Config::Wifi::password,
     Config::Runtime::wifiConnectionTimeoutMs,
@@ -44,6 +70,9 @@ DatabaseConnection database;
 
 /// Modusneutraler Speicher fuer Verbrauchsdifferenzen bis zur Bestaetigung.
 ConsumptionBuffer consumptionBuffer;
+
+/// Lokale Weboberflaeche fuer WLAN-, Puffer-, RAM- und Loop-Status.
+StatusWebServer statusWebServer(wirelessConnection, consumptionBuffer);
 
 /// Koordiniert Datenbankabfrage, Batch-Upload und Pufferbestaetigung.
 ConsumptionSync consumptionSync(
@@ -72,6 +101,9 @@ RamStorageMonitor ramStorageMonitor(
 
 /// Zustandsanzeige ueber die RGB-LED des Arduino Nano ESP32.
 StatusLed statusLed;
+
+/// Nicht-blockierender Parser fuer USB-Seriellbefehle.
+SerialCommandProcessor serialCommandProcessor;
 
 /// Vier entprellte Impulszaehler an den konfigurierten GPIO-Pins.
 CountPin counter1(
@@ -108,6 +140,8 @@ bool consumptionBufferInitialized = false;
 
 /// Haelt den Fehlerzustand bis zu einem erfolgreichen Upload sichtbar.
 bool uploadFailed = false;
+bool databaseReachable = false;
+unsigned long lastDatabaseCheck = 0;
 
 /// Erkennt WLAN-Verbindungsaufbauten fuer einen einmaligen DB-Verbindungstest.
 bool wifiWasConnected = false;
@@ -116,15 +150,117 @@ bool wifiWasConnected = false;
  * @brief Berechnet den LED-Zustand in der festgelegten Prioritaetsreihenfolge.
  */
 void updateStatusLed() {
-    if (!consumptionBufferInitialized || !wifi.isConnected() || uploadFailed) {
+    if (killSignal || programMode == ProgramMode::Stopped
+        || programMode == ProgramMode::Killed) {
+        statusLed.setStatus(StatusLed::Status::Off);
+        return;
+    }
+    if (!consumptionBufferInitialized
+        || !wirelessConnection.isConnected()
+        || uploadFailed) {
         statusLed.setStatus(StatusLed::Status::Error);
     } else if ((Config::Runtime::useNvsConsumptionBuffer
             && nvsStorageMonitor.isCritical())
         || (!Config::Runtime::useNvsConsumptionBuffer
             && ramStorageMonitor.isCritical())) {
         statusLed.setStatus(StatusLed::Status::StorageCritical);
+    } else if (!databaseReachable) {
+        statusLed.setStatus(StatusLed::Status::DatabaseUnavailable);
     } else {
         statusLed.setStatus(StatusLed::Status::WifiConnected);
+    }
+}
+
+void pauseCounterInputs() {
+    counter1.pause();
+    counter2.pause();
+    counter3.pause();
+    counter4.pause();
+}
+
+void resumeCounterInputs() {
+    counter1.resume();
+    counter2.resume();
+    counter3.resume();
+    counter4.resume();
+}
+
+void handleImmediateStop(SerialCommandType type, void*) {
+    pauseCounterInputs();
+    if (type == SerialCommandType::Stop) {
+        statusLed.setStopIndicator(StatusLed::StopIndicator::Stopping);
+    } else if (type == SerialCommandType::Kill) {
+        killSignal = true;
+        statusLed.setStatus(StatusLed::Status::Off);
+        statusLed.setStopIndicator(StatusLed::StopIndicator::Killed);
+    }
+}
+
+void printCommandHelp() {
+    Serial.println("Befehle:");
+    Serial.println("  STOP                  Erfassung pausieren und Puffer uebertragen");
+    Serial.println("  START                 Erfassung wieder starten");
+    Serial.println("  KILL                  Sofort stoppen, ohne Puffer-Upload");
+    Serial.println("  DEBUG <LEVEL>         ERROR|WARNING|INFO|DEBUG|DEBUG_PLUS");
+    Serial.println("  HELP oder ?           Diese Hilfe anzeigen");
+}
+
+void handleSerialCommand(const SerialCommand& command) {
+    switch (command.type) {
+        case SerialCommandType::Help:
+            printCommandHelp();
+            break;
+        case SerialCommandType::Stop:
+            if (programMode == ProgramMode::Running) {
+                stopRequested = true;
+                Serial.println("STOP angefordert; letzter Zaehlstand wird gesichert.");
+            } else {
+                Serial.println("STOP nicht moeglich: Erfassung ist bereits angehalten.");
+            }
+            break;
+        case SerialCommandType::Start:
+            if (programMode == ProgramMode::Running) {
+                if (stopRequested) {
+                    stopRequested = false;
+                    resumeCounterInputs();
+                    statusLed.setStopIndicator(StatusLed::StopIndicator::Off);
+                    Serial.println("STOP abgebrochen; Erfassung laeuft weiter.");
+                    break;
+                }
+                Serial.println("Erfassung laeuft bereits.");
+                break;
+            }
+            resumeCounterInputs();
+            killSignal = false;
+            stopRequested = false;
+            stopUploadAttempted = false;
+            stopNetworkWarningShown = false;
+            stopBufferWarningShown = false;
+            programMode = ProgramMode::Running;
+            statusLed.setStopIndicator(StatusLed::StopIndicator::Off);
+            updateStatusLed();
+            Serial.println("Erfassung gestartet.");
+            break;
+        case SerialCommandType::Kill:
+            pauseCounterInputs();
+            killSignal = true;
+            stopRequested = false;
+            programMode = ProgramMode::Killed;
+            statusLed.setStatus(StatusLed::Status::Off);
+            statusLed.setStopIndicator(StatusLed::StopIndicator::Killed);
+            Serial.println(
+                "KILL verarbeitet; ungepufferte Impulse und "
+                "nicht uebertragene RAM-Werte koennen verloren gehen."
+            );
+            break;
+        case SerialCommandType::SetLogLevel:
+            setLogLevel(command.logLevel);
+            Serial.print("Log-Level: ");
+            Serial.println(getLogLevelName(getLogLevel()));
+            break;
+        case SerialCommandType::Invalid:
+            Serial.println("Unbekannter oder ungueltiger Befehl. HELP zeigt die Befehle.");
+            break;
     }
 }
 
@@ -293,10 +429,61 @@ void serviceConnectedNetwork(unsigned long now) {
 
     const bool uploadSucceeded = consumptionSync.uploadPending();
     uploadFailed = !uploadSucceeded;
+    databaseReachable = uploadSucceeded;
+    lastDatabaseCheck = millis();
     updateStatusLed();
     if (uploadSucceeded) {
         immediateRequestAttempted = false;
         uploadScheduler.markCompleted();
+    }
+}
+
+void serviceStop(unsigned long now) {
+    if (!consumptionBufferInitialized) {
+        updateStatusLed();
+        if (!stopBufferWarningShown) {
+            Serial.println("STOP kann nicht bestaetigt werden: Verbrauchspuffer fehlt.");
+            stopBufferWarningShown = true;
+        }
+        return;
+    }
+    if (!consumptionBuffer.hasPending()
+        && !consumptionBuffer.isImmediateUploadRequested()) {
+        programMode = ProgramMode::Stopped;
+        statusLed.setStatus(StatusLed::Status::Off);
+        statusLed.setStopIndicator(StatusLed::StopIndicator::Stopped);
+        Serial.println("STOP abgeschlossen: Puffer leer; Flashen ist sicher.");
+        return;
+    }
+
+    if (!wirelessConnection.isConnected()) {
+        if (!stopNetworkWarningShown) {
+            Serial.println("STOP wartet auf WLAN; Orange blinkt, Puffer bleibt erhalten.");
+            stopNetworkWarningShown = true;
+        }
+        updateStatusLed();
+        return;
+    }
+    if (stopUploadAttempted
+        && now - lastStopUploadAttempt < Config::Runtime::uploadRetryMs) {
+        return;
+    }
+
+    stopUploadAttempted = true;
+    lastStopUploadAttempt = now;
+    consumptionSync.markUploadAttempt(now);
+    uploadFailed = false;
+    statusLed.setStatus(StatusLed::Status::Uploading);
+    Serial.println("STOP: uebertrage ausstehende Messwerte.");
+    const bool uploadSucceeded = consumptionSync.uploadPending();
+    uploadFailed = !uploadSucceeded;
+    databaseReachable = uploadSucceeded;
+    lastDatabaseCheck = millis();
+    updateStatusLed();
+    if (uploadSucceeded) {
+        stopUploadAttempted = false;
+        stopNetworkWarningShown = false;
+        stopBufferWarningShown = false;
     }
 }
 }
@@ -307,6 +494,9 @@ void serviceConnectedNetwork(unsigned long now) {
 void setup() {
     Serial.begin(Config::Runtime::serialBaudRate);
     statusLed.begin();
+    if (!serialCommandProcessor.begin(handleImmediateStop, nullptr)) {
+        logError("Serieller Befehlstask konnte nicht gestartet werden");
+    }
     logInfo("System gestartet");
     logInfo(
         "Konfiguration: Aufloesung "
@@ -360,12 +550,13 @@ void setup() {
         logError("Verbrauchspuffer konnte nicht initialisiert werden");
     }
 
-    if (wifi.connect()) {
-        wifi.printStatus();
+    if (wirelessConnection.connect()) {
+        wirelessConnection.printStatus();
         clockSync.begin();
     } else {
         logError("WLAN-Verbindung fehlgeschlagen; automatische Wiederverbindung aktiv");
     }
+    statusWebServer.begin();
     updateStatusLed();
 }
 
@@ -373,24 +564,52 @@ void setup() {
  * @brief Sammelt Impulse, prueft WLAN und bedient NTP sowie Datenbank-Sync.
  */
 void loop() {
+    const unsigned long loopStartedAt = micros();
+    SerialCommand command;
+    while (serialCommandProcessor.poll(command)) {
+        handleSerialCommand(command);
+    }
+
     static RejectedPulseCounts rejected1{};
     static RejectedPulseCounts rejected2{};
     static RejectedPulseCounts rejected3{};
     static RejectedPulseCounts rejected4{};
 
-    wifi.processEvents();
-    wifi.maintainConnection();
-    wifi.printStatus();
+    const bool captureActive = programMode == ProgramMode::Running
+        || programMode == ProgramMode::Stopping;
+    if (captureActive) {
+        wirelessConnection.processEvents();
+        wirelessConnection.maintainConnection();
+        wirelessConnection.printStatus();
+    }
 
-    const bool wifiConnected = wifi.isConnected();
-    if (wifiConnected && !wifiWasConnected) {
-        if (database.checkConnection()) {
+    const bool wifiConnected = wirelessConnection.isConnected();
+    if (!wifiConnected) {
+        databaseReachable = false;
+    }
+    if (captureActive && wifiConnected && !wifiWasConnected) {
+        statusWebServer.logAddress();
+        databaseReachable = database.checkConnection();
+        lastDatabaseCheck = millis();
+        if (databaseReachable) {
             logInfo("Datenbankverbindung nach WLAN-Aufbau erfolgreich");
         } else {
             logWarning(
                 "WLAN steht, aber die Datenbank ist nicht erreichbar; "
                 "Uploadversuche pruefen die Verbindung erneut"
             );
+        }
+    }
+    const unsigned long now = millis();
+    if (captureActive && wifiConnected
+        && now - lastDatabaseCheck >= Config::Runtime::databaseCheckIntervalMs) {
+        const bool wasReachable = databaseReachable;
+        lastDatabaseCheck = now;
+        databaseReachable = database.checkConnection();
+        if (databaseReachable != wasReachable) {
+            logInfo(databaseReachable
+                ? "Datenbank wieder erreichbar"
+                : "Datenbank nicht erreichbar; RGB-LED zeigt Blau");
         }
     }
     wifiWasConnected = wifiConnected;
@@ -400,17 +619,19 @@ void loop() {
     static uint64_t bufferedCount3 = 0;
     static uint64_t bufferedCount4 = 0;
 
-    bufferNewPulses(counter1, 4, bufferedCount1);
-    bufferNewPulses(counter2, 5, bufferedCount2);
-    bufferNewPulses(counter3, 6, bufferedCount3);
-    bufferNewPulses(counter4, 7, bufferedCount4);
+    if (programMode == ProgramMode::Running) {
+        bufferNewPulses(counter1, Config::Counters::databaseId1, bufferedCount1);
+        bufferNewPulses(counter2, Config::Counters::databaseId2, bufferedCount2);
+        bufferNewPulses(counter3, Config::Counters::databaseId3, bufferedCount3);
+        bufferNewPulses(counter4, Config::Counters::databaseId4, bufferedCount4);
 
-    logRejectedPulseDiagnostics(counter1, 4, rejected1);
-    logRejectedPulseDiagnostics(counter2, 5, rejected2);
-    logRejectedPulseDiagnostics(counter3, 6, rejected3);
-    logRejectedPulseDiagnostics(counter4, 7, rejected4);
+        logRejectedPulseDiagnostics(counter1, Config::Counters::databaseId1, rejected1);
+        logRejectedPulseDiagnostics(counter2, Config::Counters::databaseId2, rejected2);
+        logRejectedPulseDiagnostics(counter3, Config::Counters::databaseId3, rejected3);
+        logRejectedPulseDiagnostics(counter4, Config::Counters::databaseId4, rejected4);
+    }
 
-    if (consumptionBufferInitialized) {
+    if (programMode == ProgramMode::Running && consumptionBufferInitialized) {
         const unsigned long now = millis();
         if (Config::Runtime::useNvsConsumptionBuffer) {
             nvsStorageMonitor.update(now);
@@ -419,10 +640,38 @@ void loop() {
         }
     }
 
-    if (wifiConnected) {
-        serviceConnectedNetwork(millis());
+    if (stopRequested && programMode == ProgramMode::Running) {
+        pauseCounterInputs();
+        bufferNewPulses(counter1, Config::Counters::databaseId1, bufferedCount1);
+        bufferNewPulses(counter2, Config::Counters::databaseId2, bufferedCount2);
+        bufferNewPulses(counter3, Config::Counters::databaseId3, bufferedCount3);
+        bufferNewPulses(counter4, Config::Counters::databaseId4, bufferedCount4);
+        stopRequested = false;
+        programMode = ProgramMode::Stopping;
+        stopUploadAttempted = false;
+        stopNetworkWarningShown = false;
+        statusLed.setStopIndicator(StatusLed::StopIndicator::Stopping);
+        Serial.println("STOP aktiv: Erfassung pausiert; sichere Uebertragung beginnt.");
     }
 
-    updateStatusLed();
-    delay(Config::Runtime::mainLoopDelayMs);
+    if (programMode == ProgramMode::Running && wifiConnected) {
+        serviceConnectedNetwork(millis());
+    } else if (programMode == ProgramMode::Stopping) {
+        serviceStop(millis());
+    }
+
+    if (programMode == ProgramMode::Running
+        || programMode == ProgramMode::Stopping) {
+        updateStatusLed();
+    }
+    statusWebServer.handleClient();
+    const unsigned long activeMicros = micros() - loopStartedAt;
+    const unsigned long delayedMicros =
+        Config::Runtime::mainLoopDelayMs * 1000UL;
+    mainLoopLoadPercent = static_cast<double>(activeMicros) * 100.0
+        / (activeMicros + delayedMicros);
+    statusWebServer.setLoopLoadPercent(mainLoopLoadPercent);
+    delay(programMode == ProgramMode::Running
+        ? Config::Runtime::mainLoopDelayMs
+        : 50UL);
 }

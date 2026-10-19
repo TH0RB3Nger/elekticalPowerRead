@@ -158,3 +158,18 @@ void CountPin::reset() {
     _countSaturated = false;
     interrupts();
 }
+
+/// Meldet den GPIO-Interrupt fuer STOP und KILL ab.
+void CountPin::pause() {
+    detachInterrupt(digitalPinToInterrupt(_pin));
+}
+
+/// Registriert den zuvor pausierten GPIO-Interrupt erneut.
+void CountPin::resume() {
+    attachInterruptArg(
+        digitalPinToInterrupt(_pin),
+        handleInterrupt,
+        this,
+        CHANGE
+    );
+}

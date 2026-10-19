@@ -47,8 +47,11 @@ ausgewertet, um die Dauer des aktiven Pegels zu messen. Pruefe die Beschaltung
 und den Zaehlerausgang, bevor du die Polaritaet einstellst. Waehle nur fuer das
 Board verfuegbare GPIOs, verwende jeden Pin nur einmal und stelle sicher, dass
 die Signalpegel elektrisch zum ESP32 passen (3,3-V-Logik). Die Datenbank
-verwendet weiterhin die festen Zaehler-IDs 4 bis 7; diese IDs bezeichnen die
-vier Kanaele und muessen nicht den umkonfigurierten GPIO-Nummern entsprechen.
+verwendet die Datenbank-IDs `Config::Counters::databaseId1` bis `databaseId4`
+(Vorgabe: 4 bis 7); diese IDs bezeichnen die vier Kanaele und muessen nicht den
+GPIO-Nummern entsprechen. Die Datenbank-IDs muessen eindeutig sein. Aendere sie
+nur, wenn keine Verbrauchswerte im Puffer ausstehen, damit gepufferte Werte
+nicht unter einer neuen ID uebertragen werden.
 
 ### Schematische S0-Verdrahtung
 
@@ -167,6 +170,12 @@ verbunden ist.
 
 ### 4. Betrieb kontrollieren
 
+Nach dem WLAN-Verbindungsaufbau gibt die serielle Ausgabe die lokale URL des
+Status-Dashboards aus. Es zeigt WLAN-Signal, ausstehenden Verbrauch, Heap und
+eine naeherungsweise Auslastung der Hauptschleife; die Anzeige aktualisiert
+sich alle fuenf Sekunden. Die CPU-Angabe ist keine Messung der gesamten
+ESP32-Systemauslastung.
+
 Die serielle Ausgabe zeigt WLAN-Events, Datenbankverbindungsfehler, NTP-Status,
 Speicherstand und Upload-Ergebnisse entsprechend der eingestellten Logging-
 Stufe. Der freie NVS-Platz oder RAM-Heap wird je nach Puffermodus
@@ -187,6 +196,7 @@ Uploadversuchen erneut geprueft.
 | `src/Logging.cpp`, `include/Logging.h` | Zeitgestempelte Protokollierung mit konfigurierbaren Stufen. |
 | `src/WirelessConnection.cpp`, `include/WirelessConnection.h` | WLAN-Verbindung, Reconnects, Events und Signalstaerke. |
 | `src/StatusLed.cpp`, `include/StatusLed.h` | RGB-Statusanzeige; unabhaengige LED-Aufgabe fuer Blinksignale waehrend blockierender Uploads. |
+| `src/StatusWebServer.cpp`, `include/StatusWebServer.h` | Lokales Status-Dashboard und JSON-Endpunkt fuer Betriebswerte. |
 | `src/NtpClock.cpp`, `include/NtpClock.h` | NTP-Start, Plausibilitaetspruefung und Europe/Berlin-Systemzeit. |
 | `src/UploadScheduler.cpp`, `include/UploadScheduler.h` | Faelligkeitsverwaltung fuer feste Upload-Zeitpunkte. |
 | `src/NvsStorageMonitor.cpp`, `include/NvsStorageMonitor.h` | Periodische NVS-Statistik und Schwellwertpruefung. |
@@ -209,18 +219,22 @@ angeboten werden.
 Die eingebaute RGB-LED zeigt den Betriebszustand mit folgender Prioritaet:
 
 1. **Rot dauerhaft:** WLAN getrennt, Verbrauchspuffer nicht initialisiert oder der
-   letzte Datenbankupload ist fehlgeschlagen.
+  letzte Datenbankupload ist fehlgeschlagen.
 2. **Gelb blinkend:** Messdaten werden gerade an die Datenbank gesendet.
 3. **Orange dauerhaft:** Die freie NVS-Kapazitaet oder der freie RAM-Heap liegt
    je nach Puffermodus bei oder unter der konfigurierten Schwelle
    (`minimumFreeNvsPercent` bzw. `minimumFreeRamPercent`, Vorgabe jeweils 10 %).
-4. **Gruen dauerhaft:** WLAN verbunden und kein hoeher priorisierter Zustand
-   aktiv.
+4. **Blau dauerhaft:** WLAN verbunden, aber die Datenbank ist beim letzten Test
+  nicht erreichbar.
+5. **Gruen dauerhaft:** WLAN und Datenbank erreichbar und kein hoeher
+  priorisierter Zustand aktiv.
 
 Ein fehlgeschlagener Upload bleibt rot angezeigt, bis ein spaeterer Upload
 erfolgreich war. Waehrend des Uploads laeuft die LED-Anzeige in einer eigenen
 Aufgabe, damit das gelbe Blinksignal auch waehrend der synchronen
-Datenbankkommunikation erhalten bleibt.
+Datenbankkommunikation erhalten bleibt. Die Datenbank wird beim WLAN-Aufbau,
+nach Uploads und anschliessend gemaess
+`Config::Runtime::databaseCheckIntervalMs` (Vorgabe 60 Sekunden) geprueft.
 
 ## Ablauf und Ausfallsicherheit
 
@@ -325,6 +339,7 @@ Die zentralen Werte liegen nach dem Kopieren in `include/Config.h`:
 - `Config::Runtime::minimumFreeRamPercent`: Mindestanteil freien Heaps, bevor die Status-LED auf Speicherwarnung wechselt.
 - `Config::Runtime::ramMonitorIntervalMs`: Abstand zwischen RAM-Heap-Messungen.
 - `Config::Runtime::uploadRetryMs`: Wartezeit fuer fehlgeschlagene Uploads.
+- `Config::Runtime::databaseCheckIntervalMs`: Intervall fuer den Datenbankstatus-Test.
 - `Config::Runtime::minimumLogLevel`: Logging-Stufe (`LOG_ERROR`, `LOG_WARNING`,
   `LOG_INFO`, `LOG_DEBUG` oder `LOG_DEBUG_PLUS`).
 - `Config::Runtime::wifiConnectionTimeoutMs`, `wifiReconnectIntervalMs` und
@@ -354,12 +369,32 @@ Das Board muss waehrend Upload und serieller Ausgabe am Rechner angeschlossen
 sein. `monitor_speed` in `platformio.ini` und Baudrate des Monitors muessen
 uebereinstimmen.
 
+Im seriellen Monitor koennen zeilenweise Befehle eingegeben werden:
+
+| Befehl | Wirkung |
+| --- | --- |
+| `HELP` oder `?` | Zeigt alle Befehle. |
+| `STOP` | Pausiert die Erfassung, uebernimmt den letzten Zaehlerstand und uebertraegt den Puffer. Bei Fehlern bleibt der Stopp aktiv und der Upload wird wiederholt. |
+| `START` | Setzt die Erfassung nach einem Stopp oder KILL fort. |
+| `KILL` | Pausiert ohne Flush. Noch nicht gepufferte Impulse und RAM-Puffer koennen verloren gehen. |
+| `DEBUG ERROR`, `DEBUG WARNING`, `DEBUG INFO`, `DEBUG DEBUG` oder `DEBUG DEBUG_PLUS` | Aendert die Logstufe bis zum Neustart. |
+
+Beim normalen `STOP` blinkt die orange LED; die RGB-LED zeigt weiterhin ihren
+normalen Upload- und Fehlerzustand. Nach bestaetigtem Upload ist der Puffer leer,
+RGB geht aus und Orange leuchtet dauerhaft als Flash-Freigabe. `KILL` schaltet
+RGB aus und laesst Orange schnell blinken. `START` schaltet Orange aus und gibt
+die RGB-Statusanzeige wieder frei. Der serielle Empfang pausiert die
+Zaehl-Interrupts sofort. Ein bereits laufender synchroner SQL-Aufruf kann nicht
+abgebrochen werden und laeuft bis zu seinem Ende weiter; ein Reset waehrenddessen
+kann dessen Ergebnis unklar lassen.
+
 ## Logging und Fehlerbehebung
 
 Die Logging-Stufen und die zur Laufzeit gewaehlte Mindeststufe sind in
 `include/Logging.h` beziehungsweise `src/Logging.cpp` definiert. Die
 Ausgabestufen sind `ERROR`, `WARNING`, `INFO`, `DEBUG` und `DEBUG+`.
-Die Stufe stellst du ueber `Config::Runtime::minimumLogLevel` ein. `DEBUG`
+Die Startstufe stellst du ueber `Config::Runtime::minimumLogLevel` ein; zur
+Laufzeit kann sie mit `DEBUG <LEVEL>` geaendert werden. `DEBUG`
 protokolliert wichtige Zustandswechsel und erfolgreiche Schritte; `DEBUG+`
 enthaelt zusaetzliche WLAN-Details, RSSI-Werte, gepufferte Zaehlerwerte und
 Diagnosezaehler verworfener Pulse. Die Interrupt-Service-Routine schreibt

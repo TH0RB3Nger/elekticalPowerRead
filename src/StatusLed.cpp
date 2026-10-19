@@ -16,9 +16,11 @@ constexpr TickType_t uploadBlinkHalfPeriod = pdMS_TO_TICKS(500);
 
 /// Initialisiert die PWM-Ausgaenge und startet die Anzeigeaufgabe einmalig.
 bool StatusLed::begin() {
+    pinMode(LED_BUILTIN, OUTPUT);
     pinMode(LED_RED, OUTPUT);
     pinMode(LED_GREEN, OUTPUT);
     pinMode(LED_BLUE, OUTPUT);
+    digitalWrite(LED_BUILTIN, LOW);
     writeColor(0, 0, 0);
 
     if (_taskStarted) {
@@ -48,6 +50,13 @@ void StatusLed::setStatus(Status status) {
     portEXIT_CRITICAL(&statusMux);
 }
 
+/// Uebergibt den Zustand der separaten orange LED threadsicher.
+void StatusLed::setStopIndicator(StopIndicator indicator) {
+    portENTER_CRITICAL(&statusMux);
+    _stopIndicator = indicator;
+    portEXIT_CRITICAL(&statusMux);
+}
+
 /// Leitet den FreeRTOS-Einstieg an die Instanzmethode weiter.
 void StatusLed::taskEntry(void* parameter) {
     static_cast<StatusLed*>(parameter)->run();
@@ -56,18 +65,26 @@ void StatusLed::taskEntry(void* parameter) {
 /// Rendert Statuswechsel und das periodische Blinksignal fuer Uploads.
 void StatusLed::run() {
     Status previousStatus = Status::Error;
+    StopIndicator previousIndicator = StopIndicator::Off;
     bool previousBlinkPhase = false;
+    bool previousIndicatorOn = false;
     bool hasRendered = false;
 
     while (true) {
         Status status;
+        StopIndicator indicator;
         portENTER_CRITICAL(&statusMux);
         status = _status;
+        indicator = _stopIndicator;
         portEXIT_CRITICAL(&statusMux);
 
-        // Nur der Uploadzustand blinkt; andere Zustaende werden bei Aenderung ausgegeben.
-        const bool blinkPhase =
-            ((xTaskGetTickCount() / uploadBlinkHalfPeriod) % 2) == 0;
+        const TickType_t ticks = xTaskGetTickCount();
+        const bool blinkPhase = ((ticks / uploadBlinkHalfPeriod) % 2) == 0;
+        const bool killedBlinkPhase = ((ticks / pdMS_TO_TICKS(125)) % 2) == 0;
+        const bool indicatorOn = indicator == StopIndicator::Stopped
+            || (indicator == StopIndicator::Stopping && blinkPhase)
+            || (indicator == StopIndicator::Killed && killedBlinkPhase);
+
         if (!hasRendered
             || status != previousStatus
             || (status == Status::Uploading
@@ -86,14 +103,28 @@ void StatusLed::run() {
                 case Status::StorageCritical:
                     writeColor(ledBrightness, 12, 0);
                     break;
+                case Status::DatabaseUnavailable:
+                    writeColor(0, 0, ledBrightness);
+                    break;
                 case Status::WifiConnected:
                     writeColor(0, ledBrightness, 0);
+                    break;
+                case Status::Off:
+                    writeColor(0, 0, 0);
                     break;
             }
 
             previousStatus = status;
             previousBlinkPhase = blinkPhase;
             hasRendered = true;
+        }
+
+        if (!hasRendered
+            || indicator != previousIndicator
+            || indicatorOn != previousIndicatorOn) {
+            digitalWrite(LED_BUILTIN, indicatorOn ? HIGH : LOW);
+            previousIndicator = indicator;
+            previousIndicatorOn = indicatorOn;
         }
 
         vTaskDelay(ledTaskInterval);

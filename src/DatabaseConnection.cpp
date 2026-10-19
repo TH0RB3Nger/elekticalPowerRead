@@ -23,14 +23,25 @@
  */
 namespace {
 constexpr size_t expectedCounterCount = 4;
+constexpr uint8_t configuredCounterIds[expectedCounterCount] = {
+    Config::Counters::databaseId1,
+    Config::Counters::databaseId2,
+    Config::Counters::databaseId3,
+    Config::Counters::databaseId4
+};
 
 WiFiClient databaseClient;
 MySQL_Connection mysqlConnection(&databaseClient);
 
 /// Prueft, ob die Datenbank-ID zu einem der vier Zaehlerkanaele gehoert.
-/// Prueft, ob die Datenbank-ID zu einem der vier Zaehlerkanaele gehoert.
-bool validCounterId(uint8_t counterId) {
-    return counterId >= 4 && counterId <= 7;
+bool findCounterIndex(uint8_t counterId, size_t& index) {
+    for (size_t candidate = 0; candidate < expectedCounterCount; ++candidate) {
+        if (configuredCounterIds[candidate] == counterId) {
+            index = candidate;
+            return true;
+        }
+    }
+    return false;
 }
 
 /// Liest die Datenbanksequenz ohne Vorzeichen oder uint64_t-Ueberlauf.
@@ -206,11 +217,13 @@ bool DatabaseConnection::addConsumptionBatch(
     char formattedAmounts[expectedCounterCount][32];
     for (size_t index = 0; index < recordCount; ++index) {
         const uint8_t counterId = records[index].counterId;
-        if (!validCounterId(counterId) || seenCounter[counterId - 4]) {
+        size_t counterIndex = 0;
+        if (!findCounterIndex(counterId, counterIndex)
+            || seenCounter[counterIndex]) {
             logError("Messintervall enthaelt ungueltige oder doppelte Zaehler-IDs");
             return false;
         }
-        seenCounter[counterId - 4] = true;
+        seenCounter[counterIndex] = true;
         if (!formatAmount(
                 records[index].measuredKWh,
                 formattedAmounts[index],
