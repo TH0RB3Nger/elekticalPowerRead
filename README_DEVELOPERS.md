@@ -217,6 +217,11 @@ geaenderte Persistenz-, Retry- und Fehlerpfade gegen RAM- und NVS-Modus
 pruefen. Keine echten Zugangsdaten committen. Hinweise zu DB-Installation und
 SQL-Auswertung stehen in [`database/README.md`](database/README.md).
 
+GitHub Actions baut die Firmware bei jedem Push und Pull Request mit
+`pio run`. Der Workflow unter `.github/workflows/platformio.yml` erstellt
+dafuer eine Build-Konfiguration aus `include/Config.h.example`; lokale
+Zugangsdaten oder GitHub-Secrets sind fuer den Build nicht erforderlich.
+
 ## Fuer Nutzer: Voraussetzungen und Einrichtung
 
 ### Hardware und Dienste
