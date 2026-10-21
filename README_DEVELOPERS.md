@@ -11,6 +11,18 @@ Dieses Dokument beschreibt interne Architektur, Datenfluss, Synchronisation,
 Fehlerbehandlung und Entwicklungsablaeufe. Fuer Installation, Verdrahtung und
 Bedienung des Geraets siehe die [Anwender-README](README.md).
 
+## KI-Hinweis und Lizenz
+
+Dieses Projekt wurde mit Unterstuetzung kuenstlicher Intelligenz (KI) erstellt
+und weiterentwickelt. KI-generierter oder KI-unterstuetzter Quellcode,
+Kommentare und Dokumentation koennen Fehler enthalten. Pruefe Aenderungen
+fachlich und teste sie vor einer Freigabe oder einem Einsatz auf Hardware.
+Die Software wird ohne Gewaehr bereitgestellt.
+
+Der Projektcode steht unter der **GNU General Public License v3.0 only
+(GPL-3.0-only)**. Einzelheiten und Lizenzbedingungen stehen in der
+[LICENSE](LICENSE)-Datei.
+
 ## Inhalt
 
 - [Ueberblick fuer Entwickler](#ueberblick-fuer-entwickler)

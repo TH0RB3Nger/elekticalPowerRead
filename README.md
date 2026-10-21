@@ -10,6 +10,18 @@ Dieses Dokument fuehrt durch Hardware, Einrichtung und Bedienung. Technische
 Details zu Softwareaufbau, Tasks, Synchronisation und Entwicklung stehen im
 [Entwicklerhandbuch](README_DEVELOPERS.md).
 
+## KI-Hinweis und Lizenz
+
+Dieses Projekt wurde mit Unterstuetzung kuenstlicher Intelligenz (KI) erstellt
+und weiterentwickelt. KI-generierter oder KI-unterstuetzter Code und Text
+koennen Fehler enthalten. Pruefe die Inhalte vor Einsatz selbst, insbesondere
+bei elektrischer Verdrahtung, Datensicherung und Datenbankbetrieb. Die Software
+wird ohne Gewaehr bereitgestellt.
+
+Der Projektcode steht unter der **GNU General Public License v3.0 only
+(GPL-3.0-only)**. Einzelheiten und Lizenzbedingungen stehen in der
+[LICENSE](LICENSE)-Datei.
+
 ## Voraussetzungen
 
 - Arduino Nano ESP32 (ESP32-S3).
