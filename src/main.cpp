@@ -1,8 +1,5 @@
 #include <Arduino.h>
 #include <float.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/queue.h>
-#include <freertos/task.h>
 
 #if __has_include("Config.h")
 #include "Config.h"
@@ -13,9 +10,11 @@
 #include "ConsumptionSync.h"
 #include "CountPin.h"
 #include "DatabaseConnection.h"
+#include "DatabaseWorker.h"
 #include "Logging.h"
 #include "NtpClock.h"
 #include "NvsStorageMonitor.h"
+#include "PulseAccounting.h"
 #include "RamStorageMonitor.h"
 #include "SerialCommandProcessor.h"
 #include "StatusLed.h"
@@ -24,22 +23,9 @@
 #include "WirelessConnection.h"
 
 namespace {
-enum class DatabaseCommandType : uint8_t {
-    CheckConnection,
-    UploadPending
-};
-
-struct DatabaseCommand {
-    DatabaseCommandType type;
-};
-
-struct DatabaseResult {
-    DatabaseCommandType type;
-    bool succeeded;
-};
-
 double mainLoopLoadPercent = 0.0;
 
+/// Zentrale Betriebszustaende der Erfassung und des sicheren STOP-Ablaufs.
 enum class ProgramMode : uint8_t {
     Running,
     Stopping,
@@ -48,7 +34,6 @@ enum class ProgramMode : uint8_t {
 };
 
 ProgramMode programMode = ProgramMode::Running;
-volatile bool killSignal = false;
 bool stopRequested = false;
 bool stopUploadAttempted = false;
 bool stopNetworkWarningShown = false;
@@ -97,6 +82,9 @@ ConsumptionSync consumptionSync(
     consumptionBuffer,
     Config::Runtime::uploadRetryMs
 );
+
+/// Serialisiert Datenbankauftraege auf einem dedizierten FreeRTOS-Task.
+DatabaseWorker databaseWorker(database, consumptionSync);
 
 /// NTP-Uhr und Mitteleuropa-Sommerzeit.
 NtpClock clockSync;
@@ -152,6 +140,19 @@ CountPin counter4(
     Config::Runtime::minimumPulseIntervalMs
 );
 
+/// Uebernimmt Zaehlerdifferenzen und ISR-Diagnosen im Haupttask.
+PulseAccounting pulseAccounting(
+    consumptionBuffer,
+    counter1,
+    Config::Counters::databaseId1,
+    counter2,
+    Config::Counters::databaseId2,
+    counter3,
+    Config::Counters::databaseId3,
+    counter4,
+    Config::Counters::databaseId4
+);
+
 /// Verhindert, dass ein fehlgeschlagener Pufferstart als gueltig gilt.
 bool consumptionBufferInitialized = false;
 
@@ -164,10 +165,6 @@ unsigned long lastDatabaseCheck = 0;
 bool wifiWasConnected = false;
 
 /// Uebergibt blockierende Datenbankarbeit an einen Task auf Core 0.
-QueueHandle_t databaseCommandQueue = nullptr;
-QueueHandle_t databaseResultQueue = nullptr;
-bool databaseWorkerActive = false;
-bool databaseWorkerBusy = false;
 bool databaseUploadInProgress = false;
 bool databaseCheckRequested = false;
 
@@ -175,7 +172,7 @@ bool databaseCheckRequested = false;
  * @brief Berechnet den LED-Zustand in der festgelegten Prioritaetsreihenfolge.
  */
 void updateStatusLed() {
-    if (killSignal || programMode == ProgramMode::Stopped
+    if (programMode == ProgramMode::Stopped
         || programMode == ProgramMode::Killed) {
         statusLed.setStatus(StatusLed::Status::Off);
         return;
@@ -198,77 +195,17 @@ void updateStatusLed() {
     }
 }
 
-/// Fuehrt ausschliesslich Datenbankoperationen aus dem Worker-Task aus.
-void databaseWorkerTask(void*) {
-    DatabaseCommand command{};
-    while (true) {
-        if (xQueueReceive(
-                databaseCommandQueue,
-                &command,
-                portMAX_DELAY) != pdPASS) {
-            logError("Datenbank-Worker konnte keinen Auftrag aus der Queue lesen");
-            continue;
-        }
-
-        const bool succeeded =
-            command.type == DatabaseCommandType::CheckConnection
-                ? database.checkConnection()
-                : consumptionSync.uploadPending();
-        const DatabaseResult result{command.type, succeeded};
-        if (xQueueSend(databaseResultQueue, &result, portMAX_DELAY) != pdPASS) {
-            logError("Datenbank-Worker konnte kein Ergebnis zurueckmelden");
-        }
-    }
-}
-
-/// Startet den Datenbank-Worker auf dem von der Messschleife getrennten Core.
-bool startDatabaseWorker() {
-    databaseCommandQueue = xQueueCreate(1, sizeof(DatabaseCommand));
-    databaseResultQueue = xQueueCreate(1, sizeof(DatabaseResult));
-    if (databaseCommandQueue == nullptr || databaseResultQueue == nullptr) {
-        if (databaseCommandQueue != nullptr) {
-            vQueueDelete(databaseCommandQueue);
-            databaseCommandQueue = nullptr;
-        }
-        if (databaseResultQueue != nullptr) {
-            vQueueDelete(databaseResultQueue);
-            databaseResultQueue = nullptr;
-        }
-        logError("Queues fuer den Datenbank-Worker konnten nicht angelegt werden");
-        return false;
-    }
-
-    if (xTaskCreatePinnedToCore(
-            databaseWorkerTask,
-            "database_worker",
-            8192,
-            nullptr,
-            1,
-            nullptr,
-            0) != pdPASS) {
-        vQueueDelete(databaseCommandQueue);
-        vQueueDelete(databaseResultQueue);
-        databaseCommandQueue = nullptr;
-        databaseResultQueue = nullptr;
-        logError("Datenbank-Worker auf Core 0 konnte nicht gestartet werden");
-        return false;
-    }
-
-    databaseWorkerActive = true;
-    logInfo("Datenbank-Worker auf Core 0 gestartet; Messschleife bleibt entkoppelt");
-    return true;
-}
-
 /// Uebernimmt Worker-Ergebnisse im Haupttask und aktualisiert Uploadstatus.
 void processDatabaseResults() {
-    if (!databaseWorkerActive) {
+    if (!databaseWorker.isActive()) {
         return;
     }
 
     DatabaseResult result{};
-    while (xQueueReceive(databaseResultQueue, &result, 0) == pdPASS) {
-        databaseWorkerBusy = false;
+    while (databaseWorker.pollResult(result)) {
         if (result.type == DatabaseCommandType::CheckConnection) {
+            databaseReachable = result.succeeded;
+            lastDatabaseCheck = millis();
             if (result.succeeded) {
                 logInfo("Datenbankverbindung nach WLAN-Aufbau erfolgreich");
             } else {
@@ -277,13 +214,19 @@ void processDatabaseResults() {
                     "Uploadversuche pruefen die Verbindung erneut"
                 );
             }
+            updateStatusLed();
             continue;
         }
 
         databaseUploadInProgress = false;
         uploadFailed = !result.succeeded;
+        databaseReachable = result.succeeded;
+        lastDatabaseCheck = millis();
         if (result.succeeded) {
             uploadScheduler.markCompleted();
+            stopUploadAttempted = false;
+            stopNetworkWarningShown = false;
+            stopBufferWarningShown = false;
         }
         updateStatusLed();
     }
@@ -295,7 +238,7 @@ void serviceDatabaseCheck() {
         return;
     }
 
-    if (!databaseWorkerActive) {
+    if (!databaseWorker.isActive()) {
         const bool connected = database.checkConnection();
         if (connected) {
             logInfo("Datenbankverbindung nach WLAN-Aufbau erfolgreich");
@@ -305,22 +248,22 @@ void serviceDatabaseCheck() {
                 "Uploadversuche pruefen die Verbindung erneut"
             );
         }
+        databaseReachable = connected;
+        lastDatabaseCheck = millis();
         databaseCheckRequested = false;
         return;
     }
 
-    if (databaseWorkerBusy) {
-        return;
-    }
-    const DatabaseCommand command{DatabaseCommandType::CheckConnection};
-    if (xQueueSend(databaseCommandQueue, &command, 0) == pdPASS) {
-        databaseWorkerBusy = true;
+    if (databaseWorker.requestConnectionCheck()) {
         databaseCheckRequested = false;
     } else {
-        logError("Datenbankverbindungspruefung konnte nicht eingereiht werden");
+        if (!databaseWorker.isBusy()) {
+            logError("Datenbankverbindungspruefung konnte nicht eingereiht werden");
+        }
     }
 }
 
+/// Meldet alle vier GPIO-Interrupts ab, bevor ein letzter Zaehlstand gelesen wird.
 void pauseCounterInputs() {
     counter1.pause();
     counter2.pause();
@@ -328,6 +271,7 @@ void pauseCounterInputs() {
     counter4.pause();
 }
 
+/// Registriert die zuvor pausierten Zaehler-Interrupts erneut.
 void resumeCounterInputs() {
     counter1.resume();
     counter2.resume();
@@ -335,17 +279,18 @@ void resumeCounterInputs() {
     counter4.resume();
 }
 
+/// Sofort-Callback des Seriell-Tasks; keine Programmzustandsaenderung ausserhalb loop().
 void handleImmediateStop(SerialCommandType type, void*) {
     pauseCounterInputs();
     if (type == SerialCommandType::Stop) {
         statusLed.setStopIndicator(StatusLed::StopIndicator::Stopping);
     } else if (type == SerialCommandType::Kill) {
-        killSignal = true;
         statusLed.setStatus(StatusLed::Status::Off);
         statusLed.setStopIndicator(StatusLed::StopIndicator::Killed);
     }
 }
 
+/// Gibt die im USB-Seriellmonitor verfuegbaren Befehle aus.
 void printCommandHelp() {
     Serial.println("Befehle:");
     Serial.println("  STOP                  Erfassung pausieren und Puffer uebertragen");
@@ -355,6 +300,7 @@ void printCommandHelp() {
     Serial.println("  HELP oder ?           Diese Hilfe anzeigen");
 }
 
+/// Setzt Befehle im Haupttask um und verwaltet den Programmzustand.
 void handleSerialCommand(const SerialCommand& command) {
     switch (command.type) {
         case SerialCommandType::Help:
@@ -381,7 +327,6 @@ void handleSerialCommand(const SerialCommand& command) {
                 break;
             }
             resumeCounterInputs();
-            killSignal = false;
             stopRequested = false;
             stopUploadAttempted = false;
             stopNetworkWarningShown = false;
@@ -393,7 +338,6 @@ void handleSerialCommand(const SerialCommand& command) {
             break;
         case SerialCommandType::Kill:
             pauseCounterInputs();
-            killSignal = true;
             stopRequested = false;
             programMode = ProgramMode::Killed;
             statusLed.setStatus(StatusLed::Status::Off);
@@ -415,121 +359,6 @@ void handleSerialCommand(const SerialCommand& command) {
 }
 
 /**
- * @brief Meldet ISR-Verwerfungen aus dem Haupttask, niemals direkt aus der ISR.
- * @param counter Zaehler, dessen verworfene Pulse abgefragt werden.
- * @param counterId Feste Datenbank-ID des Zaehlerkanals.
- * @param lastCounts Letzter protokollierter ISR-Diagnosestand.
- */
-void logRejectedPulseDiagnostics(
-    const CountPin& counter,
-    uint8_t counterId,
-    RejectedPulseCounts& lastCounts
-) {
-    const RejectedPulseCounts counts = counter.getRejectedPulseCounts();
-    if (counts.tooShort == lastCounts.tooShort
-        && counts.tooSoon == lastCounts.tooSoon
-        && counts.tooShortSaturated == lastCounts.tooShortSaturated
-        && counts.tooSoonSaturated == lastCounts.tooSoonSaturated
-        && counts.countSaturated == lastCounts.countSaturated) {
-        return;
-    }
-
-    logDebugPlus(
-        "ISR-Diagnose Zaehler-ID " + String(counterId)
-        + ": zu kurze Pulse +" + String(counts.tooShort - lastCounts.tooShort)
-        + ", Mindestabstand verletzt +"
-        + String(counts.tooSoon - lastCounts.tooSoon)
-    );
-    if (counts.tooShortSaturated && !lastCounts.tooShortSaturated) {
-        logError("ISR-Diagnosezaehler fuer zu kurze Pulse ist ausgeschoepft");
-    }
-    if (counts.tooSoonSaturated && !lastCounts.tooSoonSaturated) {
-        logError("ISR-Diagnosezaehler fuer zu dichte Pulse ist ausgeschoepft");
-    }
-    if (counts.countSaturated && !lastCounts.countSaturated) {
-        logError(
-            "Impulszaehler hat UINT64_MAX erreicht; weitere Pulse "
-            "koennen nicht mehr erfasst werden"
-        );
-    }
-    lastCounts = counts;
-}
-
-/**
- * @brief Addiert neue Impulse zum konfigurierten RAM- oder NVS-Puffer.
- * @param counter Impulszaehler des GPIO-Pins.
- * @param counterId Feste Datenbank-ID des Zaehlerkanals (4 bis 7).
- * @param bufferedCount Letzter bereits in den Verbrauchspuffer uebernommener Stand.
- */
-void bufferNewPulses(
-    CountPin& counter,
-    uint8_t counterId,
-    uint64_t& bufferedCount
-) {
-    if (!consumptionBufferInitialized) {
-        return;
-    }
-
-    constexpr uint64_t rolloverThreshold = UINT64_MAX - 1000000ULL;
-    const uint64_t currentCount = counter.getCount();
-    if (currentCount < bufferedCount) {
-        logError(
-            "Impulszaehler fuer ID " + String(counterId)
-            + " wurde zurueckgesetzt; passe den gespeicherten Stand an"
-        );
-        bufferedCount = currentCount;
-        return;
-    }
-
-    if (currentCount != bufferedCount) {
-        const uint64_t newPulses = currentCount - bufferedCount;
-        const double addedConsumption =
-            newPulses / Config::Runtime::resolutionPulsesPerKWh;
-        if (!isfinite(addedConsumption)) {
-            logError(
-                "Verbrauchsdifferenz fuer Zaehler-ID " + String(counterId)
-                + " ist ausserhalb des darstellbaren Zahlenbereichs"
-            );
-            return;
-        }
-
-        logDebug(
-            "Neue gueltige Pulse fuer Zaehler-ID " + String(counterId)
-            + ": " + String(static_cast<unsigned long long>(newPulses))
-            + " (" + String(addedConsumption, 6) + " kWh)"
-        );
-        if (!consumptionBuffer.addConsumption(counterId, addedConsumption)) {
-            return;
-        }
-        bufferedCount = currentCount;
-        logDebug(
-            "Verbrauch fuer Zaehler-ID " + String(counterId)
-            + " im konfigurierten Puffer uebernommen"
-        );
-    }
-
-    if (currentCount < rolloverThreshold || bufferedCount != currentCount) {
-        return;
-    }
-    if (!consumptionBuffer.requestImmediateUpload()) {
-        return;
-    }
-    if (!counter.subtractCount(currentCount)) {
-        logError(
-            "Impulszaehler fuer ID " + String(counterId)
-            + " konnte wegen einer Saettigung nicht sicher entlastet werden"
-        );
-        return;
-    }
-
-    bufferedCount = 0;
-    logWarning(
-        "Impulszaehler fuer ID " + String(counterId)
-        + " nahe am Zahlenlimit; gepufferter Stand wird sofort uebertragen"
-    );
-}
-
-/**
  * @brief Startet bei WLAN-Verbindung Uhrzeitabgleich und DB-Zugriff.
  * @param now Aktueller millis()-Zeitwert.
  */
@@ -543,7 +372,7 @@ void serviceConnectedNetwork(unsigned long now) {
         uploadScheduler.update(synchronizedTime);
     }
 
-    if (databaseWorkerActive && databaseWorkerBusy) {
+    if (databaseWorker.isBusy()) {
         return;
     }
 
@@ -581,16 +410,14 @@ void serviceConnectedNetwork(unsigned long now) {
         updateStatusLed();
     }
 
-    if (databaseWorkerActive) {
-        const DatabaseCommand command{DatabaseCommandType::UploadPending};
-        if (xQueueSend(databaseCommandQueue, &command, 0) != pdPASS) {
+    if (databaseWorker.isActive()) {
+        if (!databaseWorker.requestUpload()) {
             logError("Datenbankupload konnte nicht in die Worker-Queue eingereiht werden");
             uploadFailed = true;
             updateStatusLed();
             return;
         }
 
-        databaseWorkerBusy = true;
         databaseUploadInProgress = true;
         return;
     }
@@ -606,6 +433,7 @@ void serviceConnectedNetwork(unsigned long now) {
     }
 }
 
+/// Haelt STOP aktiv, bis alle ausstehenden Werte bestaetigt wurden.
 void serviceStop(unsigned long now) {
     if (!consumptionBufferInitialized) {
         updateStatusLed();
@@ -632,6 +460,9 @@ void serviceStop(unsigned long now) {
         updateStatusLed();
         return;
     }
+    if (databaseWorker.isBusy()) {
+        return;
+    }
     if (stopUploadAttempted
         && now - lastStopUploadAttempt < Config::Runtime::uploadRetryMs) {
         return;
@@ -643,6 +474,17 @@ void serviceStop(unsigned long now) {
     uploadFailed = false;
     statusLed.setStatus(StatusLed::Status::Uploading);
     Serial.println("STOP: uebertrage ausstehende Messwerte.");
+    if (databaseWorker.isActive()) {
+        if (!databaseWorker.requestUpload()) {
+            logError("STOP-Upload konnte nicht in die Worker-Queue eingereiht werden");
+            uploadFailed = true;
+            updateStatusLed();
+            return;
+        }
+        databaseUploadInProgress = true;
+        return;
+    }
+
     const bool uploadSucceeded = consumptionSync.uploadPending();
     uploadFailed = !uploadSucceeded;
     databaseReachable = uploadSucceeded;
@@ -723,11 +565,7 @@ void setup() {
     }
 
     if (loggingSynchronized) {
-        startDatabaseWorker();
-    }
-
-    if (loggingSynchronized) {
-        startDatabaseWorker();
+        databaseWorker.begin();
     }
 
     if (wirelessConnection.connect()) {
@@ -750,11 +588,6 @@ void loop() {
         handleSerialCommand(command);
     }
 
-    static RejectedPulseCounts rejected1{};
-    static RejectedPulseCounts rejected2{};
-    static RejectedPulseCounts rejected3{};
-    static RejectedPulseCounts rejected4{};
-
     processDatabaseResults();
     const bool captureActive = programMode == ProgramMode::Running
         || programMode == ProgramMode::Stopping;
@@ -770,47 +603,22 @@ void loop() {
     }
     if (captureActive && wifiConnected && !wifiWasConnected) {
         statusWebServer.logAddress();
-        databaseReachable = database.checkConnection();
+        databaseCheckRequested = true;
         lastDatabaseCheck = millis();
-        if (databaseReachable) {
-            logInfo("Datenbankverbindung nach WLAN-Aufbau erfolgreich");
-        } else {
-            logWarning(
-                "WLAN steht, aber die Datenbank ist nicht erreichbar; "
-                "Uploadversuche pruefen die Verbindung erneut"
-            );
-        }
     }
     const unsigned long now = millis();
     if (captureActive && wifiConnected
         && now - lastDatabaseCheck >= Config::Runtime::databaseCheckIntervalMs) {
-        const bool wasReachable = databaseReachable;
         lastDatabaseCheck = now;
-        databaseReachable = database.checkConnection();
-        if (databaseReachable != wasReachable) {
-            logInfo(databaseReachable
-                ? "Datenbank wieder erreichbar"
-                : "Datenbank nicht erreichbar; RGB-LED zeigt Blau");
-        }
+        databaseCheckRequested = true;
     }
     wifiWasConnected = wifiConnected;
-    serviceDatabaseCheck();
-
-    static uint64_t bufferedCount1 = 0;
-    static uint64_t bufferedCount2 = 0;
-    static uint64_t bufferedCount3 = 0;
-    static uint64_t bufferedCount4 = 0;
+    if (captureActive && wifiConnected) {
+        serviceDatabaseCheck();
+    }
 
     if (programMode == ProgramMode::Running) {
-        bufferNewPulses(counter1, Config::Counters::databaseId1, bufferedCount1);
-        bufferNewPulses(counter2, Config::Counters::databaseId2, bufferedCount2);
-        bufferNewPulses(counter3, Config::Counters::databaseId3, bufferedCount3);
-        bufferNewPulses(counter4, Config::Counters::databaseId4, bufferedCount4);
-
-        logRejectedPulseDiagnostics(counter1, Config::Counters::databaseId1, rejected1);
-        logRejectedPulseDiagnostics(counter2, Config::Counters::databaseId2, rejected2);
-        logRejectedPulseDiagnostics(counter3, Config::Counters::databaseId3, rejected3);
-        logRejectedPulseDiagnostics(counter4, Config::Counters::databaseId4, rejected4);
+        pulseAccounting.process(consumptionBufferInitialized);
     }
 
     if (consumptionBufferInitialized
@@ -826,10 +634,7 @@ void loop() {
 
     if (stopRequested && programMode == ProgramMode::Running) {
         pauseCounterInputs();
-        bufferNewPulses(counter1, Config::Counters::databaseId1, bufferedCount1);
-        bufferNewPulses(counter2, Config::Counters::databaseId2, bufferedCount2);
-        bufferNewPulses(counter3, Config::Counters::databaseId3, bufferedCount3);
-        bufferNewPulses(counter4, Config::Counters::databaseId4, bufferedCount4);
+        pulseAccounting.flush(consumptionBufferInitialized);
         stopRequested = false;
         programMode = ProgramMode::Stopping;
         stopUploadAttempted = false;

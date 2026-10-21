@@ -26,12 +26,23 @@ bool beginLogging() {
 
 /// Setzt die Laufzeitstufe des zentralen Loggers.
 void setLogLevel(LogLevel level) {
+    const bool locked = logMutex != nullptr
+        && xSemaphoreTake(logMutex, portMAX_DELAY) == pdTRUE;
     currentLogLevel = level;
+    if (locked) {
+        xSemaphoreGive(logMutex);
+    }
 }
 
 /// Gibt die aktuell aktive Laufzeitstufe zurueck.
 LogLevel getLogLevel() {
-    return currentLogLevel;
+    const bool locked = logMutex != nullptr
+        && xSemaphoreTake(logMutex, portMAX_DELAY) == pdTRUE;
+    const LogLevel level = currentLogLevel;
+    if (locked) {
+        xSemaphoreGive(logMutex);
+    }
+    return level;
 }
 
 /// Wandelt einen Log-Level in seine kurze serielle Bezeichnung um.
@@ -50,12 +61,14 @@ const char* getLogLevelName(LogLevel level) {
  * @brief Formatiert lokale Zeit und Stufe und gibt die Meldung aus.
  */
 void logMessage(LogLevel level, const String& message) {
-    if (level > currentLogLevel) {
-        return;
-    }
-
     const bool locked = logMutex != nullptr
         && xSemaphoreTake(logMutex, portMAX_DELAY) == pdTRUE;
+    if (level > currentLogLevel) {
+        if (locked) {
+            xSemaphoreGive(logMutex);
+        }
+        return;
+    }
 
     char timestamp[40];
     const time_t currentTime = time(nullptr);

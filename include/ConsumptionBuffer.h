@@ -1,6 +1,8 @@
 #pragma once
 
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 #include "ConsumptionBufferState.h"
 #include "DatabaseConnection.h"
@@ -43,21 +45,28 @@ public:
      * @param capacity Anzahl der verfuegbaren Elemente in records.
      * @param recordCount Anzahl der zurueckgegebenen Saetze.
      * @param sequence Sequenznummer fuer den idempotenten Datenbankupload.
+     * @param immediateUploadRequested Ob der Batch einen Sofort-Upload abdeckt.
      * @return true, wenn ein vollstaendiger Batch kopiert wurde.
      */
     bool copyPendingBatch(
         ConsumptionRecord* records,
         size_t capacity,
         size_t& recordCount,
-        uint64_t& sequence
+        uint64_t& sequence,
+        bool& immediateUploadRequested
     ) const;
 
     /**
-     * @brief Bestaetigt einen Commit, leert Werte und sichert die Folgesequenz.
+     * @brief Bestaetigt einen Batch, entfernt nur dessen Werte und sichert die Folgesequenz.
      * @param sequence Sequenznummer des bestaetigten Batches.
      * @return true, wenn Zustand und Folgesequenz uebernommen wurden.
      */
-    bool confirmBatchUploaded(uint64_t sequence);
+    bool confirmBatchUploaded(
+        uint64_t sequence,
+        const ConsumptionRecord* records,
+        size_t recordCount,
+        bool immediateUploadRequested
+    );
 
 private:
     /// NVS wird fuer Sequenznummern und seltene Checkpoints in beiden Modi genutzt.
@@ -68,6 +77,9 @@ private:
 
     /// Gibt an, ob der Puffer erfolgreich initialisiert wurde.
     bool _initialized = false;
+
+    /// Serialisiert Hauptloop-, Worker- und Webserverzugriffe auf den Puffer.
+    SemaphoreHandle_t _mutex = nullptr;
 
     /// Speichert einen NVS-Checkpoint und aktualisiert den RAM-Zustand erst danach.
     bool saveCheckpoint(const ConsumptionBufferState& next);

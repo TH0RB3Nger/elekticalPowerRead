@@ -21,20 +21,21 @@ ConsumptionSync::ConsumptionSync(
  * @brief Sendet den aktuellen Batch und bestaetigt ihn erst nach dem Datenbank-Commit.
  */
 bool ConsumptionSync::uploadPending() {
-    ConsumptionRecord batch[expectedCounterCount];
-    size_t batchCount = 0;
-    uint64_t sequence = 0;
-    if (!_buffer.copyPendingBatch(
-            batch,
-            expectedCounterCount,
-            batchCount,
-            sequence)) {
-        logError("Ausstehende Verbrauchsdaten konnten nicht gelesen werden");
-        return false;
+    if (!_batchInFlight) {
+        if (!_buffer.copyPendingBatch(
+                _inFlightBatch,
+                expectedCounterCount,
+                _inFlightBatchCount,
+                _inFlightSequence,
+                _inFlightImmediateUploadRequested)) {
+            logError("Ausstehende Verbrauchsdaten konnten nicht gelesen werden");
+            return false;
+        }
+        _batchInFlight = true;
     }
     logInfo(
         "Speichere Messintervall der Sequenz "
-        + String(static_cast<unsigned long long>(sequence))
+        + String(static_cast<unsigned long long>(_inFlightSequence))
     );
 
     const String deviceId = _database.deviceId();
@@ -43,12 +44,20 @@ bool ConsumptionSync::uploadPending() {
         return false;
     }
 
-    if (!_database.addConsumptionBatch(deviceId, sequence, batch, batchCount)) {
+    if (!_database.addConsumptionBatch(
+            deviceId,
+            _inFlightSequence,
+            _inFlightBatch,
+            _inFlightBatchCount)) {
         logWarning("Datenbank-Intervall fehlgeschlagen; Verbrauchspuffer bleibt erhalten");
         return false;
     }
 
-    if (!_buffer.confirmBatchUploaded(sequence)) {
+    if (!_buffer.confirmBatchUploaded(
+            _inFlightSequence,
+            _inFlightBatch,
+            _inFlightBatchCount,
+            _inFlightImmediateUploadRequested)) {
         logError(
             "Verbrauchspuffer konnte nach erfolgreichem Upload nicht geleert werden; "
             "derselbe Upload wird sicher wiederholt"
@@ -56,6 +65,10 @@ bool ConsumptionSync::uploadPending() {
         return false;
     }
 
+    _batchInFlight = false;
+    _inFlightBatchCount = 0;
+    _inFlightSequence = 0;
+    _inFlightImmediateUploadRequested = false;
     logInfo("Bestaetigtes Messintervall gespeichert; Verbrauchspuffer wurde geleert");
     return true;
 }

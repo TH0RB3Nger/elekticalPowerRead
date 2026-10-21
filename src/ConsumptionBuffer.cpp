@@ -17,6 +17,28 @@ constexpr uint8_t counterIds[counterCount] = {
     Config::Counters::databaseId4
 };
 
+class BufferLock {
+public:
+    explicit BufferLock(SemaphoreHandle_t mutex)
+        : _mutex(mutex),
+          _locked(_mutex != nullptr
+              && xSemaphoreTake(_mutex, portMAX_DELAY) == pdTRUE) {}
+
+    ~BufferLock() {
+        if (_locked) {
+            xSemaphoreGive(_mutex);
+        }
+    }
+
+    bool locked() const {
+        return _locked;
+    }
+
+private:
+    SemaphoreHandle_t _mutex;
+    bool _locked;
+};
+
 bool findCounterIndex(uint8_t counterId, size_t& index) {
     for (size_t candidate = 0; candidate < counterCount; ++candidate) {
         if (counterIds[candidate] == counterId) {
@@ -30,6 +52,19 @@ bool findCounterIndex(uint8_t counterId, size_t& index) {
 
 /// Initialisiert den NVS-Status und laedt ausstehende Werte, falls vorhanden.
 bool ConsumptionBuffer::begin() {
+    if (_mutex == nullptr) {
+        _mutex = xSemaphoreCreateMutex();
+        if (_mutex == nullptr) {
+            logError("Mutex fuer den Verbrauchspuffer konnte nicht erstellt werden");
+            return false;
+        }
+    }
+    BufferLock lock(_mutex);
+    if (!lock.locked()) {
+        logError("Verbrauchspuffer konnte nicht synchronisiert werden");
+        return false;
+    }
+
     if (!_nvsStore.begin()) {
         return false;
     }
@@ -54,6 +89,11 @@ bool ConsumptionBuffer::begin() {
 
 /// Addiert einen Messwert und speichert ihn nur im konfigurierten NVS-Modus sofort.
 bool ConsumptionBuffer::addConsumption(uint8_t counterId, double amount) {
+    BufferLock lock(_mutex);
+    if (!lock.locked()) {
+        logError("Verbrauchspuffer konnte nicht synchronisiert werden");
+        return false;
+    }
     if (!_initialized) {
         logError("Verbrauchspuffer ist nicht initialisiert");
         return false;
@@ -88,6 +128,11 @@ bool ConsumptionBuffer::addConsumption(uint8_t counterId, double amount) {
 
 /// Speichert eine sofortige Uploadanforderung als NVS-Checkpoint.
 bool ConsumptionBuffer::requestImmediateUpload() {
+    BufferLock lock(_mutex);
+    if (!lock.locked()) {
+        logError("Verbrauchspuffer konnte nicht synchronisiert werden");
+        return false;
+    }
     if (!_initialized) {
         logError("Sofortiger Upload ohne initialisierten Verbrauchspuffer angefordert");
         return false;
@@ -108,11 +153,21 @@ bool ConsumptionBuffer::requestImmediateUpload() {
 
 /// Prueft, ob ein persistenter Sofort-Upload-Checkpoint aussteht.
 bool ConsumptionBuffer::isImmediateUploadRequested() const {
+    BufferLock lock(_mutex);
+    if (!lock.locked()) {
+        logError("Sofort-Uploadstatus konnte nicht synchronisiert werden");
+        return false;
+    }
     return _initialized && _state.immediateUploadRequested != 0;
 }
 
 /// Prueft, ob mindestens ein Zaehler einen positiven Verbrauch gepuffert hat.
 bool ConsumptionBuffer::hasPending() const {
+    BufferLock lock(_mutex);
+    if (!lock.locked()) {
+        logError("Pufferstatus konnte nicht synchronisiert werden");
+        return false;
+    }
     if (!_initialized) {
         return false;
     }
@@ -127,6 +182,11 @@ bool ConsumptionBuffer::hasPending() const {
 
 /// Addiert die vier noch nicht bestaetigten Kanalwerte fuer die Statusanzeige.
 double ConsumptionBuffer::getPendingConsumptionKWh() const {
+    BufferLock lock(_mutex);
+    if (!lock.locked()) {
+        logError("Pufferstatus konnte nicht synchronisiert werden");
+        return 0.0;
+    }
     if (!_initialized) {
         return 0.0;
     }
@@ -143,10 +203,20 @@ bool ConsumptionBuffer::copyPendingBatch(
     ConsumptionRecord* records,
     size_t capacity,
     size_t& recordCount,
-    uint64_t& sequence
+    uint64_t& sequence,
+    bool& immediateUploadRequested
 ) const {
+    BufferLock lock(_mutex);
+    if (!lock.locked()) {
+        logError("Verbrauchs-Batch konnte nicht synchronisiert werden");
+        recordCount = 0;
+        sequence = 0;
+        immediateUploadRequested = false;
+        return false;
+    }
     recordCount = 0;
     sequence = 0;
+    immediateUploadRequested = false;
     if (!_initialized || records == nullptr || capacity < counterCount) {
         logError("Ungueltiger Ausgabepuffer fuer Verbrauchsdaten");
         return false;
@@ -163,6 +233,7 @@ bool ConsumptionBuffer::copyPendingBatch(
 
     recordCount = counterCount;
     sequence = _state.nextSequence;
+    immediateUploadRequested = _state.immediateUploadRequested != 0;
     logDebug(
         "Verbrauchs-Batch zusammengestellt: Sequenz "
         + String(static_cast<unsigned long long>(sequence))
@@ -171,27 +242,69 @@ bool ConsumptionBuffer::copyPendingBatch(
     return true;
 }
 
-/// Leert einen bestaetigten Batch und sichert die naechste Sequenz.
-bool ConsumptionBuffer::confirmBatchUploaded(uint64_t sequence) {
+/// Entfernt nur bestaetigte Batchwerte und sichert die naechste Sequenz.
+bool ConsumptionBuffer::confirmBatchUploaded(
+    uint64_t sequence,
+    const ConsumptionRecord* records,
+    size_t recordCount,
+    bool immediateUploadRequested
+) {
+    BufferLock lock(_mutex);
+    if (!lock.locked()) {
+        logError("Uploadbestaetigung konnte nicht synchronisiert werden");
+        return false;
+    }
     if (!_initialized || sequence != _state.nextSequence
-        || _state.nextSequence == UINT64_MAX) {
+        || _state.nextSequence == UINT64_MAX
+        || records == nullptr || recordCount != counterCount) {
         logError("Bestaetigte Sequenz stimmt nicht mit dem Verbrauchspuffer ueberein");
         return false;
     }
 
     ConsumptionBufferState next = _state;
     ++next.nextSequence;
-    for (double& amount : next.pendingConsumption) {
-        amount = 0.0;
+    bool seenCounter[counterCount] = {};
+    for (size_t recordIndex = 0; recordIndex < recordCount; ++recordIndex) {
+        size_t counterIndex = 0;
+        const ConsumptionRecord& record = records[recordIndex];
+        if (!findCounterIndex(record.counterId, counterIndex)
+            || seenCounter[counterIndex]
+            || !isfinite(record.measuredKWh)
+            || record.measuredKWh < 0.0
+            || record.measuredKWh > next.pendingConsumption[counterIndex]) {
+            logError("Bestaetigter Batch passt nicht zum aktuellen Verbrauchspuffer");
+            return false;
+        }
+        seenCounter[counterIndex] = true;
+        next.pendingConsumption[counterIndex] -= record.measuredKWh;
     }
-    next.immediateUploadRequested = 0;
+    bool hasUnuploadedValues = false;
+    for (const double amount : next.pendingConsumption) {
+        hasUnuploadedValues = hasUnuploadedValues || amount > 0.0;
+    }
+    next.immediateUploadRequested =
+        (!immediateUploadRequested && _state.immediateUploadRequested != 0)
+            || (immediateUploadRequested && hasUnuploadedValues)
+        ? 1
+        : 0;
 
-    // Die Folgesequenz bleibt in beiden Modi fuer Neustart-Wiederholungen erhalten.
-    if (!saveCheckpoint(next)) {
-        return false;
+    if (Config::Runtime::useNvsConsumptionBuffer) {
+        if (!saveCheckpoint(next)) {
+            return false;
+        }
+    } else {
+        // Persist sequence advancement without persisting RAM-only new arrivals.
+        ConsumptionBufferState checkpoint = next;
+        for (double& amount : checkpoint.pendingConsumption) {
+            amount = 0.0;
+        }
+        if (!_nvsStore.save(checkpoint)) {
+            return false;
+        }
+        _state = next;
     }
     logDebug(
-        "Bestaetigten Batch geleert und Folgesequenz gesichert: "
+        "Bestaetigten Batch verarbeitet und Folgesequenz gesichert: "
         + String(static_cast<unsigned long long>(sequence))
     );
     return true;

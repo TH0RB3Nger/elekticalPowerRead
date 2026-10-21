@@ -1,6 +1,0 @@
-There are currently no project-local libraries in this directory. External
-dependencies are declared in `platformio.ini` and resolved by PlatformIO.
-
-Add a project-specific component here only when it has a clear reusable
-boundary from the firmware modules in `src/`. Place each local component in its
-own directory.

@@ -23,7 +23,7 @@ public:
     );
 
     /**
-     * @brief Sendet den aktuellen Puffer, bestaetigt die Daten und loescht ihn.
+     * @brief Sendet einen Puffer-Snapshot und bestaetigt nur die Daten dieses Batches.
      * @return true, wenn der Batch erfolgreich bestaetigt und geloescht wurde.
      */
     bool uploadPending();
@@ -47,6 +47,13 @@ private:
 
     /// Konfigurierbarer Zeitabstand fuer Upload-Wiederholungen.
     unsigned long _uploadRetryMs;
+
+    /// Unveraenderter Batch fuer Wiederholungen bis die Pufferbestaetigung gelingt.
+    ConsumptionRecord _inFlightBatch[4]{};
+    size_t _inFlightBatchCount = 0;
+    uint64_t _inFlightSequence = 0;
+    bool _inFlightImmediateUploadRequested = false;
+    bool _batchInFlight = false;
 
     /// Zustand und Zeitpunkt des letzten Datenbank-Uploadversuchs.
     bool _uploadAttempted = false;

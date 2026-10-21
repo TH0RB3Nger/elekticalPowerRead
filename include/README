@@ -1,7 +1,0 @@
-
-Shared interfaces and project configuration headers live in this directory.
-`Config.h.example` is the versioned template; copy it to the ignored local
-`Config.h` and fill in device-specific settings and credentials.
-
-Each module exposes its public declarations from a matching header. Keep
-implementation details in the corresponding source file under `src/`.

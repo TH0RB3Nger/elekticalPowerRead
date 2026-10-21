@@ -1,4 +1,0 @@
-
-No PlatformIO tests are currently defined in this directory. Add focused tests
-here when hardware-independent logic can be exercised with the PlatformIO Test
-Runner. The current project verification command is `pio run`.

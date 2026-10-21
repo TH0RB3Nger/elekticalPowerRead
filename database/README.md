@@ -1,54 +1,79 @@
-# MariaDB/MySQL setup
+# Datenbank: Einrichtung und Datenmodell
 
-1. Run the complete `schema.sql` on the MariaDB/MySQL server to create the
-   database, time-series table, and idempotent upload state. If executing only
-   the `CREATE TABLE` statements in phpMyAdmin, first run the `CREATE DATABASE`
-   statement; the tables are explicitly created in `energy_monitor`. Existing
-   cumulative values in `energy_consumption` are left untouched; they cannot be
-   accurately converted into interval readings without historical timestamps.
-2. Copy `include/Config.h.example` to `include/Config.h` and set the database
-   values in `Config::Database`. The real configuration file, which also
-   contains Wi-Fi and runtime settings, is excluded from Git.
-3. Create a dedicated database user with only the permissions the firmware
-   needs: INSERT on `energy_measurements`, plus SELECT, INSERT, and UPDATE on
-   `energy_sync_state`. Allow connections only from the ESP32's local network.
-4. Keep the database on a trusted local network. This firmware connects
-   directly without TLS; do not expose the database port to the public Internet.
+Diese Anleitung beschreibt die MariaDB-/MySQL-Seite der Firmware. Die
+Geraeteinstallation und Verdrahtung sind in der [Anwender-README](../README.md)
+beschrieben. Softwarearchitektur, Datenfluss und Task-Synchronisation stehen
+im [Entwicklerhandbuch](../README_DEVELOPERS.md).
 
-`DatabaseConnection::addConsumptionBatch(deviceId, sequence, records, count)`
-inserts one reading for each of the four counter channels in a single
-transaction. Each row stores the device, counter, upload sequence, measured
-kWh, and the database server's shared UTC timestamp for that batch.
+## Schema installieren
 
-Valid counter IDs are the fixed channel IDs `4` through `7`; GPIO assignments
-are independently configurable. The main loop records only new pulses into a
-configurable RAM or ESP32 NVS buffer (RAM by default). In RAM mode, unuploaded
-values are lost on power loss or reset. Each database row records kWh measured
-since the previous successful upload for that device and counter. The configured
-resolution is the number of pulses per kWh, so 1000 pulses/kWh add 0.001 kWh
-(1 Wh) per valid pulse. NTP sets the scheduler clock to Europe/Berlin time with
-automatic summer-time changes; with the default 15-minute interval, uploads
-occur on quarter-hour boundaries (15:00, 15:15, 15:30, ...), including zero-kWh
-rows when a counter did not consume energy during that interval. The database timestamp is generated in
-UTC by the server and shared by all four rows in a batch. In NVS mode, if free
-capacity reaches the configured threshold (10% by default), a pending batch is
-uploaded immediately instead of waiting for the next boundary. This NVS monitor is
-disabled in RAM mode. The RAM monitor reports free, total, and minimum heap;
-falling below its configured reserve threshold raises a warning but does not
-trigger an upload because uploading does not shrink the fixed-size RAM buffer.
-Monitor intervals and thresholds are configured in `Config::Runtime` in
-`include/Config.h`.
+Fuehre [`schema.sql`](schema.sql) einmal mit einem administrativen
+MariaDB-/MySQL-Konto aus. Das Skript erstellt die Datenbank `energy_monitor`
+und folgende Tabellen:
 
-The buffer is cleared only after the transaction succeeds. A per-device
-sequence stored in `energy_sync_state` makes retries safe if the database
-committed a batch but its response was lost; this table stores only one sequence
-row per ESP32. `energy_measurements` stores time, counter ID, device ID,
-sequence, and `DECIMAL(65, 12)` kWh values. The timestamp is the interval end;
-if connectivity delays an upload, the interval and consumption value span
-until that delayed upload is committed.
+- `energy_measurements`: Zeitreihenwerte je Geraet, Kanal und Uploadsequenz.
+- `energy_sync_state`: letzter bestaetigter Upload je Geraet.
 
-Example query with the previous measurement timestamp shown as the interval
-start (MySQL 8+/MariaDB versions with window-function support):
+Das Schema aendert oder loescht vorhandene kumulierte Werte in
+`energy_consumption` nicht. Ohne historische Zeitstempel lassen sich daraus
+keine korrekten Intervallmessungen rekonstruieren.
+
+## Firmware-Benutzer
+
+Erstelle einen eigenen Benutzer fuer die Firmware und begrenze ihn auf das
+lokale Netzwerk des ESP32. Er benoetigt nur:
+
+- `INSERT` auf `energy_measurements`.
+- `SELECT`, `INSERT` und `UPDATE` auf `energy_sync_state`.
+
+Trage Host, Port, Datenbankname, Benutzer und Passwort unter
+`Config::Database` in `include/Config.h` ein. Die lokale Konfiguration wird
+nicht versioniert und darf nicht committet werden.
+
+**Netzwerksicherheit:** Die Firmwareverbindung verwendet kein TLS. Betreibe
+die Datenbank nur in einem vertrauenswuerdigen Netz und exponiere den
+Datenbankport nicht gegenueber dem oeffentlichen Internet.
+
+## Datenmodell und Upload
+
+Ein Upload enthaelt je einen Datensatz fuer alle vier Zaehlerkanaele. Die
+Firmware sendet diese Datensaetze zusammen mit einer stabilen Geraete-ID und
+einer fortlaufenden Sequenznummer. Der Datenbankserver speichert die Zeilen in
+einer Transaktion und vergibt allen vier denselben UTC-Zeitstempel.
+
+| Spalte | Bedeutung |
+| --- | --- |
+| `device_id` | Zwoelfstellige Kennung aus der eFuse-MAC des ESP32. |
+| `counter_id` | Konfigurierte Kanal-ID; standardmaessig 4 bis 7. |
+| `sequence` | Fortlaufende Uploadsequenz je Geraet. |
+| `measured_at` | Gemeinsamer UTC-Endzeitpunkt der vier Messwerte. |
+| `consumption_kwh` | Verbrauch in kWh seit dem vorherigen erfolgreichen Upload. |
+
+`energy_sync_state` enthaelt genau einen Sequenzstand je Geraet. Dadurch kann
+ein Upload nach einer verlorenen Antwort gefahrlos wiederholt werden: Ist die
+Sequenz bereits verbucht, bestaetigt die Datenbank den Wiederholungsversuch,
+ohne doppelte Zeitreihenwerte anzulegen.
+
+Die Firmware zieht nach erfolgreichem Commit nur die Werte des uebertragenen
+Snapshots vom lokalen Puffer ab. Messwerte, die waehrend des Datenbankzugriffs
+neu erfasst wurden, bleiben fuer den naechsten Upload erhalten. Details zum
+Queue-Worker und den Synchronisationsregeln stehen im
+[Entwicklerhandbuch](../README_DEVELOPERS.md#datenfluss-und-threading).
+
+## Intervall und Zeitstempel
+
+Die lokale NTP-Uhr plant Uploads standardmaessig auf Viertelstundenmarken in
+`Europe/Berlin`. Bei einer Aufloesung von 1000 Impulsen/kWh addiert ein
+gueltiger Impuls 0,001 kWh (1 Wh). Auch Kanaele ohne Verbrauch werden bei einem
+regulaeren Upload mit einem Nullwert gespeichert.
+
+`measured_at` ist der UTC-Endzeitpunkt des Uploads, nicht der Beginn des
+Intervalls. Der Start ergibt sich aus dem vorherigen Datensatz des gleichen
+Geraets und Kanals. Bei spaeter Uebertragung wegen Netzwerkausfall umfasst der
+Wert den Verbrauch bis zum Zeitpunkt des erfolgreichen Uploads.
+
+Beispiel fuer eine SQL-Auswertung mit Intervallstart und -ende (MySQL 8+ bzw.
+MariaDB mit Window-Function-Unterstuetzung):
 
 ```sql
 SELECT
@@ -65,20 +90,29 @@ WHERE counter_id = 4
 ORDER BY device_id, measured_at, sequence;
 ```
 
-The ESP32 checkpoints and resets its local 64-bit pulse counter before it can
-wrap. The corresponding NVS upload request is persistent and bypasses the
-regular quarter-hour schedule. If the database is unavailable, the checkpoint
-remains in NVS and the firmware retries when the connection is available.
+## Puffer- und Speicherverhalten
 
-The NVS monitor reports available NVS key-value entries, not the total physical
-flash chip or the firmware partition. In NVS mode, the pending buffer is a
-fixed-size record and does not grow as consumption accumulates. In RAM mode,
-normal pulse updates do not write pending values to NVS; sequence status and
-rare overflow checkpoints are still persisted.
+Der Geraetepuffer ist standardmaessig RAM-basiert. Nicht bestaetigte
+Verbrauchswerte gehen dann bei Stromausfall oder Neustart verloren. Im
+konfigurierbaren NVS-Modus werden neue Verbrauchswerte persistent gesichert;
+das erhoeht die Ausfallsicherheit, beansprucht aber Flash-Schreibzyklen.
 
-In NVS mode, the buffer is written when new pulses are counted. This preserves
-pending consumption across a reboot, but frequent pulse writes use flash
-endurance. Adjust the persistence strategy if the meter produces a very high
-pulse rate.
-NTP requires network access to the configured time server; Internet access is
-needed only when using a public time server.
+Ein kritischer freier NVS-Anteil kann im NVS-Modus einen vorgezogenen Upload
+ausloesen. Im RAM-Modus meldet die Firmware eine kritische Heap-Reserve, loest
+dadurch aber keinen Upload aus. Sequenzstatus und seltene Ueberlauf-
+Checkpoints werden in beiden Modi im NVS gesichert.
+
+Der NVS-Monitor misst verfuegbare NVS-Eintraege und nicht den gesamten
+physischen Flash oder den fuer Firmware reservierten Bereich. Das Verbrauchs-
+NVS-Datenformat ist ein fester Datensatz und waechst nicht mit der Zahl der
+Impulse.
+
+## Konfiguration und Betrieb
+
+Uploadintervall, Zaehleraufloesung, Puffermodus, NVS-/Heap-Schwellen und
+Pruefintervalle stehen in `Config::Runtime` der lokalen `include/Config.h`.
+Die Datenbankzeit wird nicht durch die lokale Zeitzone beeinflusst: SQL-
+Zeitstempel werden durch den Server in UTC vergeben.
+
+Die Firmware benoetigt Netzwerkzugriff zum konfigurierten NTP-Server; Internet
+ist nur erforderlich, wenn ein oeffentlicher Zeitserver verwendet wird.
