@@ -41,10 +41,22 @@ die Datenblaetter von Zaehler und Interface. Ein falscher Anschluss kann das
 Board beschaedigen.
 
 Bei einem typischen Open-Collector-Interface zieht der Ausgang den GPIO
-waehrend des Impulses auf GND. Das ist ein aktiver LOW-Impuls und entspricht
-der Beispielkonfiguration `pulseActiveHigh = false` mit internem Pull-up.
-Verwende keinen zusaetzlichen Pull-up, wenn das Interface diesen nicht
-erfordert.
+während des Impulses auf GND. Das ist ein aktiver LOW-Impuls und entspricht
+der Konfiguration `pulseActiveHigh = false`.
+
+Die Firmware konfiguriert den GPIO-Eingang automatisch passend zur gewählten
+Signalpolarität: Bei aktiven HIGH-Impulsen wird `INPUT_PULLDOWN` verwendet,
+bei aktiven LOW-Impulsen `INPUT_PULLUP`. Eine manuelle Konfiguration der
+internen Pull-Widerstände ist daher nicht erforderlich.
+
+Ob zusätzliche externe Widerstände benötigt werden, hängt vom verwendeten
+S0-Interface und den elektrischen Bedingungen ab. Beachte die Dokumentation
+und das Datenblatt des Interfaces. Bei langen Leitungen oder störbehafteter
+Umgebung kann eine zusätzliche externe Beschaltung erforderlich sein.
+Verbinde S0-Ausgänge niemals direkt mit einem ESP32-GPIO, sondern verwende
+ein geeignetes, elektrisch entkoppelndes und 3,3-V-kompatibles Interface.
+
+Hinweis zu Widerständen: Ein externer Pull-Up- oder Pull-Down-Widerstand am S0-Pin ist nicht erforderlich. Die Firmware konfiguriert die internen Widerstände des Arduino Nano ESP32 automatisch passend zur gewählten Polarität (_pulseActiveHigh).
 
 Voreingestellte GPIOs und Datenbank-Kanal-IDs:
 
